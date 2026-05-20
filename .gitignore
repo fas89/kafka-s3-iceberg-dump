@@ -1,4 +1,6 @@
 target/
+benchmark/results/
+.env
 .flattened-pom.xml
 .idea/
 *.iml
@@ -7,3 +9,13 @@ target/
 .bloop
 .metals
 .claude
+
+# Generated mTLS material — never committed
+certs/*.p12
+certs/*.pem
+certs/*.crt
+certs/*.csr
+certs/*.srl
+certs/ca.key
+certs/creds
+certs/client-ssl.properties

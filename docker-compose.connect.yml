@@ -1,0 +1,111 @@
+# Kafka Connect ingest engine overlay — use with the shared base:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.connect.yml up --build
+#
+# Runs a Kafka Connect worker with the Apache Iceberg sink connector (built by
+# engines/connect/Dockerfile). `connect-setup` registers the connector, which
+# writes `connect_db.events`; a standalone `maintenance` container compacts and
+# expires that table — Flink-based by default, or Spark-based when
+# docker-compose.maintenance-spark.yml is layered on top.
+
+name: s3-table-dump
+
+services:
+  kafka-connect:
+    build:
+      context: ./engines/connect
+    depends_on:
+      kafka-setup:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8083:8083"   # Connect REST API
+    volumes:
+      - ./certs:/etc/kafka/secrets:ro
+    environment:
+      AWS_REGION: us-east-1
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_GROUP_ID: connect-iceberg
+      CONNECT_CONFIG_STORAGE_TOPIC: connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: connect-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      # mTLS to the broker — applied to the worker and to every connector
+      # producer/consumer (ssl.client.auth=required on the broker).
+      CONNECT_SECURITY_PROTOCOL: SSL
+      CONNECT_SSL_KEYSTORE_TYPE: PKCS12
+      CONNECT_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/connect.keystore.p12
+      CONNECT_SSL_KEYSTORE_PASSWORD: changeit
+      CONNECT_SSL_KEY_PASSWORD: changeit
+      CONNECT_SSL_TRUSTSTORE_TYPE: PKCS12
+      CONNECT_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/truststore.p12
+      CONNECT_SSL_TRUSTSTORE_PASSWORD: changeit
+      CONNECT_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ""
+      CONNECT_PRODUCER_SECURITY_PROTOCOL: SSL
+      CONNECT_PRODUCER_SSL_KEYSTORE_TYPE: PKCS12
+      CONNECT_PRODUCER_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/connect.keystore.p12
+      CONNECT_PRODUCER_SSL_KEYSTORE_PASSWORD: changeit
+      CONNECT_PRODUCER_SSL_KEY_PASSWORD: changeit
+      CONNECT_PRODUCER_SSL_TRUSTSTORE_TYPE: PKCS12
+      CONNECT_PRODUCER_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/truststore.p12
+      CONNECT_PRODUCER_SSL_TRUSTSTORE_PASSWORD: changeit
+      CONNECT_PRODUCER_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ""
+      CONNECT_CONSUMER_SECURITY_PROTOCOL: SSL
+      CONNECT_CONSUMER_SSL_KEYSTORE_TYPE: PKCS12
+      CONNECT_CONSUMER_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/connect.keystore.p12
+      CONNECT_CONSUMER_SSL_KEYSTORE_PASSWORD: changeit
+      CONNECT_CONSUMER_SSL_KEY_PASSWORD: changeit
+      CONNECT_CONSUMER_SSL_TRUSTSTORE_TYPE: PKCS12
+      CONNECT_CONSUMER_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/truststore.p12
+      CONNECT_CONSUMER_SSL_TRUSTSTORE_PASSWORD: changeit
+      CONNECT_CONSUMER_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ""
+
+  # Registers the Iceberg sink connector once the Connect REST API is up.
+  connect-setup:
+    image: curlimages/curl:8.11.1
+    depends_on:
+      kafka-connect:
+        condition: service_started
+    volumes:
+      - ./engines/connect:/config:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo 'waiting for Kafka Connect REST...';
+        until curl -sf http://kafka-connect:8083/ >/dev/null; do sleep 3; done;
+        echo 'registering iceberg sink connector';
+        curl -sf -X PUT -H 'Content-Type: application/json' \
+          --data @/config/iceberg-sink.json \
+          http://kafka-connect:8083/connectors/iceberg-sink/config;
+        echo ' connector registered'
+
+  # Standalone Iceberg maintenance for connect_db.events, reaching the catalog
+  # over JDBC directly. The connector auto-creates the table; the maintenance
+  # job polls until it exists. Flink-based here; docker-compose.maintenance-
+  # spark.yml swaps in Spark.
+  maintenance:
+    image: eclipse-temurin:21-jre
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    volumes:
+      - job:/jars:ro
+    environment:
+      ICEBERG_DB: connect_db
+      ICEBERG_TABLE: events
+      AWS_REGION: us-east-1
+    command: ["java", "-jar", "/jars/flink-maintenance.jar"]

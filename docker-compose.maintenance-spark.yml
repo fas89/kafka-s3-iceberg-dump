@@ -1,0 +1,28 @@
+# Optional overlay — maintain the Connect or DuckDB engine's Iceberg table
+# with Spark (native procedures) instead of the default Flink MaintenanceJob.
+#
+# Layer it AFTER an engine overlay:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.duckdb.yml \
+#                  -f docker-compose.maintenance-spark.yml up --build
+#   docker compose -f docker-compose.yml -f docker-compose.connect.yml \
+#                  -f docker-compose.maintenance-spark.yml up --build
+#
+# It overrides the `maintenance` service to run spark-maintenance; the
+# ICEBERG_DB / ICEBERG_TABLE values and the dependency wiring are inherited
+# from the engine overlay. Without this file, maintenance runs on Flink.
+
+name: s3-table-dump
+
+services:
+  maintenance:
+    image: apache/spark:4.0.0-java21
+    volumes:
+      - job:/jars:ro
+    entrypoint: ["/opt/spark/bin/spark-submit"]
+    command:
+      - "--master"
+      - "local[*]"
+      - "--class"
+      - "com.example.iceberg.sparkmaintenance.SparkMaintenanceJob"
+      - "/jars/spark-maintenance.jar"

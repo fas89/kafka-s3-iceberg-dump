@@ -1,10 +1,17 @@
-# Self-contained demo stack: Kafka -> Flink -> Iceberg (on MinIO/S3),
-# with Iceberg table maintenance running inside the same Flink job.
+# Shared infrastructure for the multi-engine Kafka -> Iceberg demo.
 #
-#   docker compose up --build
+# This file defines only what every engine shares: MinIO (S3 storage),
+# Postgres (Iceberg JDBC catalog), Kafka (mTLS broker), the Maven `builder`,
+# and the `producer` data source. Each ingestion engine is added by an overlay:
 #
-# The `builder` service compiles the fat jar (no local JDK/Maven needed),
-# `submitter` deploys it to the Flink cluster, and `datagen` streams events.
+#   docker compose -f docker-compose.yml -f docker-compose.flink.yml   up --build
+#   docker compose -f docker-compose.yml -f docker-compose.spark.yml   up --build
+#   docker compose -f docker-compose.yml -f docker-compose.duckdb.yml  up --build
+#   docker compose -f docker-compose.yml -f docker-compose.connect.yml up --build
+#
+# Every engine consumes the same `events` topic, writes its own Iceberg
+# namespace (flink_db / spark_db / duckdb_db / connect_db) and runs its own
+# table maintenance. The `builder` compiles every module's fat jar once.
 
 name: s3-table-dump
 
@@ -23,8 +30,10 @@ services:
       MINIO_ROOT_USER: admin
       MINIO_ROOT_PASSWORD: password
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # web console
+      # Bound to localhost only — the demo stack is not meant to be reachable
+      # from other hosts on the network.
+      - "127.0.0.1:9000:9000"   # S3 API
+      - "127.0.0.1:9001:9001"   # web console
     volumes:
       - minio-data:/data
 
@@ -53,7 +62,7 @@ services:
       POSTGRES_PASSWORD: iceberg
       POSTGRES_DB: iceberg
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U iceberg -d iceberg"]
       interval: 5s
@@ -63,25 +72,36 @@ services:
   # ------------------------------------------------------------------ kafka --
   kafka:
     image: apache/kafka:4.0.0
-    ports:
-      - "29092:29092"   # host access (e.g. kafka-console-consumer from your laptop)
+    volumes:
+      - ./certs:/etc/kafka/secrets:ro
     environment:
       KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: CONTROLLER://0.0.0.0:9093,SSL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: SSL://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,SSL:SSL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: SSL
+      # mTLS: every client (and the broker itself) presents a CA-signed cert.
+      # The apache/kafka image reads store passwords from a credentials file.
+      KAFKA_SSL_KEYSTORE_TYPE: PKCS12
+      KAFKA_SSL_KEYSTORE_FILENAME: broker.keystore.p12
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: creds
+      KAFKA_SSL_KEY_CREDENTIALS: creds
+      KAFKA_SSL_TRUSTSTORE_TYPE: PKCS12
+      KAFKA_SSL_TRUSTSTORE_FILENAME: truststore.p12
+      KAFKA_SSL_TRUSTSTORE_CREDENTIALS: creds
+      KAFKA_SSL_CLIENT_AUTH: required
+      KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ""
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_NUM_PARTITIONS: 3
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/9092' || exit 1"]
       interval: 5s
       timeout: 10s
       retries: 30
@@ -91,42 +111,16 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    volumes:
+      - ./certs:/etc/kafka/secrets:ro
     entrypoint: >
       /bin/sh -c "
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092
+        --command-config /etc/kafka/secrets/client-ssl.properties
         --create --if-not-exists --topic events --partitions 3 --replication-factor 1;
       echo 'kafka topic ready'"
 
-  # ------------------------------------------------------------------ flink --
-  flink-jobmanager:
-    image: flink:2.0.2-java21
-    command: jobmanager
-    ports:
-      - "8081:8081"   # Flink Web UI
-    environment:
-      AWS_REGION: us-east-1
-      FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jobmanager
-        jobmanager.memory.process.size: 1000m
-        taskmanager.numberOfTaskSlots: 4
-        parallelism.default: 1
-        execution.checkpointing.interval: 30s
-        state.backend.type: hashmap
-
-  flink-taskmanager:
-    image: flink:2.0.2-java21
-    command: taskmanager
-    depends_on:
-      - flink-jobmanager
-    environment:
-      AWS_REGION: us-east-1
-      FLINK_PROPERTIES: |
-        jobmanager.rpc.address: flink-jobmanager
-        taskmanager.memory.process.size: 1728m
-        taskmanager.numberOfTaskSlots: 4
-        parallelism.default: 1
-
-  # ------------------------------------------------------- build & deploy ----
+  # ------------------------------------------------------------ build & data --
   builder:
     image: maven:3.9.9-eclipse-temurin-21
     working_dir: /src
@@ -139,42 +133,82 @@ services:
     command: >
       /bin/sh -c "
       mvn -q -DskipTests -Drevision='${APP_VERSION:-0.0.0-SNAPSHOT}' clean package &&
-      cp /src/target/app.jar /out/app.jar &&
-      echo 'fat jar built -> /out/app.jar'"
+      cp /src/engine-flink/target/app.jar      /out/engine-flink.jar &&
+      cp /src/engine-spark/target/app.jar      /out/engine-spark.jar &&
+      cp /src/engine-duckdb/target/app.jar     /out/engine-duckdb.jar &&
+      cp /src/flink-maintenance/target/app.jar /out/flink-maintenance.jar &&
+      cp /src/spark-maintenance/target/app.jar /out/spark-maintenance.jar &&
+      cp /src/producer/target/app.jar          /out/producer.jar &&
+      cp /src/tools/target/app.jar             /out/tools.jar &&
+      cp /root/.m2/repository/org/postgresql/postgresql/42.7.4/postgresql-42.7.4.jar /out/postgresql.jar &&
+      echo 'fat jars built -> /out'"
 
-  submitter:
-    image: flink:2.0.2-java21
+  # The Java mTLS producer is the demo data source (replaces the kcat datagen
+  # script). It streams JSON events to the `events` topic until the stack is
+  # stopped; benchmark runs override the command with --count N.
+  producer:
+    image: eclipse-temurin:21-jre
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+      kafka-setup:
+        condition: service_completed_successfully
+    volumes:
+      - job:/jars:ro
+      - ./certs:/certs:ro
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: events
+      CERT_DIR: /certs
+      INTERVAL_MS: "500"
+      # 0 = continuous (the demo data source); a benchmark run exports
+      # RECORD_COUNT=N so the producer emits exactly N events and exits.
+      RECORD_COUNT: "${RECORD_COUNT:-0}"
+    command: ["java", "-jar", "/jars/producer.jar"]
+
+  # Reads an engine's Iceberg table metrics for the benchmark harness. Profile-
+  # gated so it never starts with `up`; the benchmark invokes it with
+  # `docker compose run --rm tools`.
+  tools:
+    image: eclipse-temurin:21-jre
+    profiles: ["tools"]
     depends_on:
       builder:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
-      kafka-setup:
-        condition: service_completed_successfully
       minio-setup:
         condition: service_completed_successfully
-      flink-jobmanager:
-        condition: service_started
-    environment:
-      AWS_REGION: us-east-1
     volumes:
       - job:/jars:ro
-    entrypoint: >
-      /bin/bash -c "
-      echo 'waiting for Flink JobManager REST...';
-      until (echo > /dev/tcp/flink-jobmanager/8081) 2>/dev/null; do sleep 3; done;
-      echo 'submitting job';
-      flink run -d -m flink-jobmanager:8081 /jars/app.jar"
+    environment:
+      AWS_REGION: us-east-1
+    command: ["java", "-jar", "/jars/tools.jar"]
 
-  # ----------------------------------------------------------- data source ---
-  datagen:
-    image: edenhill/kcat:1.7.1
+  # Compaction-strategy benchmark (binpack / sort / zorder). Profile-gated so it
+  # never starts with `up`; benchmark/compaction.sh invokes it one-shot per
+  # strategy with `docker compose run`, setting MAINTENANCE_REWRITE_STRATEGY.
+  compaction-bench:
+    image: apache/spark:4.0.0-java21
+    profiles: ["tools"]
     depends_on:
-      kafka-setup:
+      builder:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio-setup:
         condition: service_completed_successfully
     volumes:
-      - ./scripts:/scripts:ro
-    entrypoint: ["/bin/sh", "/scripts/datagen.sh"]
+      - job:/jars:ro
+    environment:
+      AWS_REGION: us-east-1
+    entrypoint: ["/opt/spark/bin/spark-submit"]
+    command:
+      - "--master"
+      - "local[*]"
+      - "--class"
+      - "com.example.iceberg.sparkmaintenance.CompactionBenchmark"
+      - "/jars/spark-maintenance.jar"
 
 volumes:
   minio-data:

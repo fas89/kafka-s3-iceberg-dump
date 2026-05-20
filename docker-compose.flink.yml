@@ -1,0 +1,65 @@
+# Flink ingest engine overlay — use with the shared base:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.flink.yml up --build
+#
+# Runs a Flink mini-cluster and submits engine-flink, which writes
+# `flink_db.events` and runs Iceberg table maintenance in the same job.
+
+name: s3-table-dump
+
+services:
+  flink-jobmanager:
+    image: flink:2.0.2-java21
+    command: jobmanager
+    ports:
+      - "127.0.0.1:8081:8081"   # Flink Web UI
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      AWS_REGION: us-east-1
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 1000m
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 1
+        execution.checkpointing.interval: 30s
+        state.backend.type: hashmap
+
+  flink-taskmanager:
+    image: flink:2.0.2-java21
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      AWS_REGION: us-east-1
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.memory.process.size: 1728m
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 1
+
+  flink-submitter:
+    image: flink:2.0.2-java21
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      kafka-setup:
+        condition: service_completed_successfully
+      minio-setup:
+        condition: service_completed_successfully
+      flink-jobmanager:
+        condition: service_started
+    environment:
+      AWS_REGION: us-east-1
+    volumes:
+      - job:/jars:ro
+    entrypoint: >
+      /bin/bash -c "
+      echo 'waiting for Flink JobManager REST...';
+      until (echo > /dev/tcp/flink-jobmanager/8081) 2>/dev/null; do sleep 3; done;
+      echo 'submitting engine-flink job';
+      flink run -d -m flink-jobmanager:8081 /jars/engine-flink.jar"

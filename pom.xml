@@ -5,14 +5,24 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.example</groupId>
-  <artifactId>kafka-to-iceberg</artifactId>
-  <!-- Maven CI-friendly version: the real version is supplied by
-       git-semver-release via -Drevision=$(git-semver-release version);
-       0.0.0-SNAPSHOT is only the fallback for plain local builds.
+  <artifactId>kafka-to-iceberg-parent</artifactId>
+  <!-- Maven CI-friendly version: real version supplied via
+       -Drevision=$(git-semver-release version); 0.0.0-SNAPSHOT is the fallback.
        https://maven.apache.org/guides/mini/guide-maven-ci-friendly.html -->
   <version>${revision}</version>
-  <packaging>jar</packaging>
-  <name>Kafka S3 Iceberg Dump</name>
+  <packaging>pom</packaging>
+  <name>Kafka to Iceberg — multi-engine demo (parent)</name>
+
+  <modules>
+    <module>common</module>
+    <module>flink-maintenance</module>
+    <module>spark-maintenance</module>
+    <module>engine-flink</module>
+    <module>engine-spark</module>
+    <module>engine-duckdb</module>
+    <module>producer</module>
+    <module>tools</module>
+  </modules>
 
   <properties>
     <revision>0.0.0-SNAPSHOT</revision>
@@ -24,86 +34,140 @@
     <iceberg.version>1.10.2</iceberg.version>
     <hadoop.version>3.4.1</hadoop.version>
     <jackson.version>2.18.2</jackson.version>
+    <postgresql.version>42.7.4</postgresql.version>
+    <!-- Spark 4.0 is Scala 2.13 only and supports Java 21, matching the rest
+         of the build; its Iceberg runtime tracks ${iceberg.version}. -->
+    <spark.version>4.0.0</spark.version>
+    <!-- kafka-clients is declared directly by the engines that use it (DuckDB,
+         producer), NOT managed here: a global pin would override the version
+         the Flink/Spark Kafka connectors are built and tested against. -->
+    <kafka.version>4.0.0</kafka.version>
+    <duckdb.version>1.4.3.0</duckdb.version>
+    <slf4j.version>2.0.16</slf4j.version>
+    <junit.version>5.11.4</junit.version>
   </properties>
 
-  <dependencies>
-    <!-- ===== Flink core: provided by the Flink cluster / image ===== -->
-    <dependency>
-      <groupId>org.apache.flink</groupId>
-      <artifactId>flink-streaming-java</artifactId>
-      <version>${flink.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.flink</groupId>
-      <artifactId>flink-clients</artifactId>
-      <version>${flink.version}</version>
-      <scope>provided</scope>
-    </dependency>
-    <!-- flink-table-runtime ships in the official Flink image /lib; Iceberg needs RowData -->
-    <dependency>
-      <groupId>org.apache.flink</groupId>
-      <artifactId>flink-table-runtime</artifactId>
-      <version>${flink.version}</version>
-      <scope>provided</scope>
-    </dependency>
+  <dependencyManagement>
+    <dependencies>
+      <!-- ===== Flink: provided by the Flink cluster / image ===== -->
+      <dependency>
+        <groupId>org.apache.flink</groupId>
+        <artifactId>flink-streaming-java</artifactId>
+        <version>${flink.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.flink</groupId>
+        <artifactId>flink-clients</artifactId>
+        <version>${flink.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.flink</groupId>
+        <artifactId>flink-table-runtime</artifactId>
+        <version>${flink.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.flink</groupId>
+        <artifactId>flink-connector-kafka</artifactId>
+        <version>${flink.kafka.connector.version}</version>
+      </dependency>
 
-    <!-- ===== Bundled into the fat jar ===== -->
-    <dependency>
-      <groupId>org.apache.flink</groupId>
-      <artifactId>flink-connector-kafka</artifactId>
-      <version>${flink.kafka.connector.version}</version>
-    </dependency>
+      <!-- ===== Iceberg ===== -->
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-flink-runtime-2.0</artifactId>
+        <version>${iceberg.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-aws-bundle</artifactId>
+        <version>${iceberg.version}</version>
+      </dependency>
+      <!-- iceberg-core (Catalog API + JdbcCatalog + CatalogUtil) and iceberg-aws
+           (the S3FileIO classes); the AWS SDK iceberg-aws needs is supplied
+           separately by iceberg-aws-bundle. Used by the tools module. -->
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-core</artifactId>
+        <version>${iceberg.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-aws</artifactId>
+        <version>${iceberg.version}</version>
+      </dependency>
 
-    <!-- Shaded Iceberg-Flink runtime: includes iceberg-core, sink and the
-         org.apache.iceberg.flink.maintenance.api.* table-maintenance API -->
-    <dependency>
-      <groupId>org.apache.iceberg</groupId>
-      <artifactId>iceberg-flink-runtime-2.0</artifactId>
-      <version>${iceberg.version}</version>
-    </dependency>
-    <!-- S3FileIO + shaded AWS SDK v2 (for MinIO / S3) -->
-    <dependency>
-      <groupId>org.apache.iceberg</groupId>
-      <artifactId>iceberg-aws-bundle</artifactId>
-      <version>${iceberg.version}</version>
-    </dependency>
+      <!-- ===== Hadoop: Iceberg CatalogLoader needs hadoop Configuration ===== -->
+      <dependency>
+        <groupId>org.apache.hadoop</groupId>
+        <artifactId>hadoop-client-api</artifactId>
+        <version>${hadoop.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.hadoop</groupId>
+        <artifactId>hadoop-client-runtime</artifactId>
+        <version>${hadoop.version}</version>
+      </dependency>
 
-    <!-- Iceberg's CatalogLoader needs org.apache.hadoop.conf.Configuration on the
-         classpath even when using S3FileIO; the shaded Hadoop client uber jars
-         are conflict-free and avoid pulling a full Hadoop tree. -->
-    <dependency>
-      <groupId>org.apache.hadoop</groupId>
-      <artifactId>hadoop-client-api</artifactId>
-      <version>${hadoop.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.hadoop</groupId>
-      <artifactId>hadoop-client-runtime</artifactId>
-      <version>${hadoop.version}</version>
-    </dependency>
+      <!-- ===== Postgres JDBC: Iceberg JDBC catalog + maintenance lock ===== -->
+      <dependency>
+        <groupId>org.postgresql</groupId>
+        <artifactId>postgresql</artifactId>
+        <version>${postgresql.version}</version>
+      </dependency>
 
-    <!-- Iceberg JDBC catalog + maintenance JdbcLockFactory talk to Postgres -->
-    <dependency>
-      <groupId>org.postgresql</groupId>
-      <artifactId>postgresql</artifactId>
-      <version>42.7.4</version>
-    </dependency>
+      <!-- ===== JSON ===== -->
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
 
-    <!-- JSON parsing of the Kafka payload -->
-    <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-databind</artifactId>
-      <version>${jackson.version}</version>
-    </dependency>
-  </dependencies>
+      <!-- ===== Spark: core/SQL provided by the Spark image (engine-spark) ===== -->
+      <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-sql_2.13</artifactId>
+        <version>${spark.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-sql-kafka-0-10_2.13</artifactId>
+        <version>${spark.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.iceberg</groupId>
+        <artifactId>iceberg-spark-runtime-4.0_2.13</artifactId>
+        <version>${iceberg.version}</version>
+      </dependency>
+
+      <!-- ===== DuckDB JDBC driver (engine-duckdb) ===== -->
+      <dependency>
+        <groupId>org.duckdb</groupId>
+        <artifactId>duckdb_jdbc</artifactId>
+        <version>${duckdb.version}</version>
+      </dependency>
+
+      <!-- ===== Logging backend for the standalone `java -jar` engines ===== -->
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-simple</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+
+      <!-- ===== Testing (JUnit 5) ===== -->
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
 
   <build>
-    <finalName>app</finalName>
     <plugins>
-      <!-- Resolves the CI-friendly ${revision} into the installed/built POM so
-           the artifact is consumable (required on Maven 3 for ci-friendly
-           versions). resolveCiFriendliesOnly = only rewrite ${revision} etc. -->
+      <!-- Resolves the CI-friendly ${revision} into the built POM (required on
+           Maven 3 for ci-friendly versions). Keep it — see AGENTS.md. -->
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>flatten-maven-plugin</artifactId>
@@ -125,46 +189,26 @@
           </execution>
         </executions>
       </plugin>
-
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.13.0</version>
-      </plugin>
-
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-shade-plugin</artifactId>
-        <version>3.6.0</version>
-        <executions>
-          <execution>
-            <phase>package</phase>
-            <goals><goal>shade</goal></goals>
-            <configuration>
-              <createDependencyReducedPom>false</createDependencyReducedPom>
-              <filters>
-                <filter>
-                  <artifact>*:*</artifact>
-                  <excludes>
-                    <exclude>META-INF/*.SF</exclude>
-                    <exclude>META-INF/*.DSA</exclude>
-                    <exclude>META-INF/*.RSA</exclude>
-                    <exclude>module-info.class</exclude>
-                  </excludes>
-                </filter>
-              </filters>
-              <transformers>
-                <!-- Merge service files: required for Iceberg FileIO, AWS,
-                     Hadoop FileSystem and Flink factory discovery -->
-                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                  <mainClass>com.example.flinkiceberg.KafkaToIcebergJob</mainClass>
-                </transformer>
-              </transformers>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
     </plugins>
+
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.13.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>3.6.0</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.5.2</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
   </build>
 </project>

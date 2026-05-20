@@ -1,0 +1,96 @@
+# DuckDB ingest engine overlay — use with the shared base:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.duckdb.yml up --build
+#
+# DuckDB's iceberg extension speaks only the REST catalog protocol, so this
+# overlay adds an `iceberg-rest` facade (JDBC/Postgres-backed) that DuckDB
+# attaches to. engine-duckdb writes `duckdb_db.events`; a standalone
+# `maintenance` container compacts and expires that table — Flink-based by
+# default, or Spark-based when docker-compose.maintenance-spark.yml is layered
+# on top.
+
+name: s3-table-dump
+
+services:
+  # REST-catalog facade over the shared Postgres JDBC catalog — DuckDB's
+  # iceberg extension cannot speak JDBC directly.
+  iceberg-rest:
+    # The rest-fixture image is not tagged per Iceberg patch release; 1.9.2 is
+    # a published tag and serves the same JDBC-backed catalog protocol.
+    image: apache/iceberg-rest-fixture:1.9.2
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8181:8181"   # Iceberg REST catalog
+    volumes:
+      - job:/jars:ro
+    # The fixture image bundles no JDBC drivers and its default `java -jar`
+    # cannot see one. Re-launch with the Postgres driver (staged into /jars by
+    # the builder) on the classpath so the JdbcCatalog backend can reach it.
+    command:
+      - java
+      - -cp
+      - /usr/lib/iceberg-rest/iceberg-rest-adapter.jar:/jars/postgresql.jar
+      - org.apache.iceberg.rest.RESTCatalogServer
+    environment:
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: jdbc:postgresql://postgres:5432/iceberg
+      CATALOG_JDBC_USER: iceberg
+      CATALOG_JDBC_PASSWORD: iceberg
+      CATALOG_WAREHOUSE: s3://warehouse
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: us-east-1
+
+  engine-duckdb:
+    image: eclipse-temurin:21-jre
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+      kafka-setup:
+        condition: service_completed_successfully
+      iceberg-rest:
+        condition: service_started
+    volumes:
+      - job:/jars:ro
+      - ./certs:/certs:ro
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: events
+      ICEBERG_DB: duckdb_db
+      ICEBERG_TABLE: events
+      ICEBERG_REST_URI: http://iceberg-rest:8181
+      CERT_DIR: /certs
+    command: ["java", "-jar", "/jars/engine-duckdb.jar"]
+
+  # Standalone Iceberg maintenance for duckdb_db.events, reaching the catalog
+  # over JDBC directly (Postgres) — the same store the REST facade is backed by.
+  # Flink-based here; docker-compose.maintenance-spark.yml swaps in Spark.
+  maintenance:
+    image: eclipse-temurin:21-jre
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    volumes:
+      - job:/jars:ro
+    environment:
+      ICEBERG_DB: duckdb_db
+      ICEBERG_TABLE: events
+      AWS_REGION: us-east-1
+      # DuckDB writes via the iceberg-rest facade, whose backend JDBC catalog
+      # is named `rest_backend`; maintenance must use the same name to find
+      # the table over a direct JDBC connection.
+      ICEBERG_CATALOG_NAME: rest_backend
+    command: ["java", "-jar", "/jars/flink-maintenance.jar"]

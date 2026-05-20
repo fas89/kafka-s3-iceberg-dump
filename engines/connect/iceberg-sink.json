@@ -1,0 +1,30 @@
+{
+  "connector.class": "org.apache.iceberg.connect.IcebergSinkConnector",
+  "tasks.max": "1",
+  "topics": "events",
+
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+
+  "iceberg.catalog": "demo",
+  "iceberg.catalog.catalog-impl": "org.apache.iceberg.jdbc.JdbcCatalog",
+  "iceberg.catalog.uri": "jdbc:postgresql://postgres:5432/iceberg",
+  "iceberg.catalog.jdbc.user": "iceberg",
+  "iceberg.catalog.jdbc.password": "iceberg",
+  "iceberg.catalog.warehouse": "s3://warehouse",
+  "iceberg.catalog.io-impl": "org.apache.iceberg.aws.s3.S3FileIO",
+  "iceberg.catalog.s3.endpoint": "http://minio:9000",
+  "iceberg.catalog.s3.path-style-access": "true",
+  "iceberg.catalog.s3.access-key-id": "admin",
+  "iceberg.catalog.s3.secret-access-key": "password",
+  "iceberg.catalog.client.region": "us-east-1",
+
+  "iceberg.tables": "connect_db.events",
+  "iceberg.tables.auto-create-enabled": "true",
+  "iceberg.tables.evolve-schema-enabled": "true",
+  "iceberg.tables.schema-force-optional": "true",
+
+  "iceberg.control.commit.interval-ms": "5000",
+  "iceberg.control.commit.timeout-ms": "30000"
+}

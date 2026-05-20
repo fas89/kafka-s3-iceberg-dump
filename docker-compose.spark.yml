@@ -1,0 +1,41 @@
+# Spark ingest engine overlay — use with the shared base:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.spark.yml up --build
+#
+# Runs engine-spark via spark-submit in local mode. The Spark app writes
+# `spark_db.events` and runs Iceberg maintenance in-job via the catalog's
+# native compaction / snapshot-expiration procedures.
+
+name: s3-table-dump
+
+services:
+  spark:
+    image: apache/spark:4.0.0-java21
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      kafka-setup:
+        condition: service_completed_successfully
+      minio-setup:
+        condition: service_completed_successfully
+    environment:
+      AWS_REGION: us-east-1
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: events
+      ICEBERG_DB: spark_db
+      CERT_DIR: /certs
+    volumes:
+      - job:/jars:ro
+      - ./certs:/certs:ro
+    # The Spark streaming checkpoint goes to the container's own writable /tmp
+    # (the apache/spark image runs as uid 185); a fresh named volume would be
+    # root-owned and unwritable. Each benchmark run is a clean stack anyway.
+    entrypoint: ["/opt/spark/bin/spark-submit"]
+    command:
+      - "--master"
+      - "local[*]"
+      - "--class"
+      - "com.example.iceberg.spark.SparkIngestJob"
+      - "/jars/engine-spark.jar"
