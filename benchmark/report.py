@@ -564,116 +564,30 @@ def build_implementation() -> str:
     return """
     <h2>Implementation</h2>
     <div class='card'>
-      <p><strong>kafka-s3-iceberg-dump</strong> is a Maven multi-module
-        monorepo that ingests JSON events from a mutual-TLS Kafka topic
-        into one Iceberg table <em>per engine</em>, on MinIO (S3) via a
-        shared Postgres JDBC catalog. The whole stack runs in Docker
-        Compose &mdash; a base file plus one overlay per engine.</p>
-
-      <h3>Engine wiring</h3>
+      <p>Maven multi-module monorepo. mTLS Kafka &rarr; per-engine ingest
+        &rarr; one Iceberg table per engine on MinIO via a shared
+        Postgres JDBC catalog. Iceberg 1.10.2, Java 21, Docker Compose
+        (base + one overlay per engine). Maintenance tuning is
+        single-sourced in <code>common/MaintenanceTuning.java</code>.</p>
       <table>
         <thead><tr><th>engine</th><th>ingest</th><th>maintenance</th></tr></thead>
         <tbody>
-          <tr>
-            <td><span class='engine-flink'>flink</span></td>
-            <td><code>engine-flink/FlinkIngestJob.java</code> &mdash;
-              KafkaSource &rarr; <code>JsonToRowData</code> &rarr;
-              <code>IcebergSink.forRowData</code>. Ingest-only.</td>
-            <td><strong>Sibling container</strong> running
-              <code>flink-maintenance.jar</code> against the same table
-              (upstream PR #1 pattern, applied here without the K8s
-              migration). Wraps the JDBC lock in
-              <code>RetryingTriggerLockFactory</code>; the chain is
-              <code>RewriteDataFiles</code> + <code>ExpireSnapshots</code>
-              + <code>DeleteOrphanFiles</code>.</td>
-          </tr>
-          <tr>
-            <td><span class='engine-spark'>spark</span></td>
-            <td><code>engine-spark/SparkIngestJob.java</code> &mdash;
-              Structured Streaming with explicit DDL, partitioned by
-              <code>event_type</code>.</td>
-            <td><strong>In-job</strong>, native Iceberg procedures
-              (<code>rewrite_data_files</code> with binpack / sort /
-              zorder, <code>expire_snapshots</code>) on a timer.</td>
-          </tr>
-          <tr>
-            <td><span class='engine-duckdb'>duckdb</span></td>
-            <td><code>engine-duckdb/DuckDbIngestJob.java</code> &mdash;
-              kafka-clients consumer +
-              <code>iceberg</code>/<code>httpfs</code> DuckDB extensions
-              via JDBC. Micro-batched inserts.</td>
-            <td><strong>Sibling container</strong> running
-              <code>flink-maintenance.jar</code>. DuckDB reaches the
-              catalog via an <code>iceberg-rest</code> facade backed by
-              the shared Postgres.</td>
-          </tr>
-          <tr>
-            <td><span class='engine-connect'>connect</span></td>
-            <td><code>engines/connect/iceberg-sink.json</code> &mdash;
-              <code>iceberg-kafka-connect</code> 1.9.2 sink with
-              <code>JsonConverter</code> +
-              <code>auto-create-enabled</code> +
-              <code>evolve-schema-enabled</code>. No custom Java.</td>
-            <td><strong>Sibling container</strong> running
-              <code>flink-maintenance.jar</code>. Same lock id keeps it
-              serialised against any other maintenance writer.</td>
-          </tr>
+          <tr><td><span class='engine-flink'>flink</span></td>
+            <td>ingest-only Flink job</td>
+            <td>sibling <code>flink-maintenance.jar</code> container
+              (PR #1 split) with <code>RetryingTriggerLockFactory</code>
+              + <code>DeleteOrphanFiles</code></td></tr>
+          <tr><td><span class='engine-spark'>spark</span></td>
+            <td>Structured Streaming, partitioned by <code>event_type</code></td>
+            <td>in-job, native procedures (binpack / sort / zorder)</td></tr>
+          <tr><td><span class='engine-duckdb'>duckdb</span></td>
+            <td>kafka-clients + DuckDB iceberg extension, micro-batched</td>
+            <td>sibling <code>flink-maintenance.jar</code> container</td></tr>
+          <tr><td><span class='engine-connect'>connect</span></td>
+            <td><code>iceberg-kafka-connect</code> sink config, no Java</td>
+            <td>sibling <code>flink-maintenance.jar</code> container</td></tr>
         </tbody>
       </table>
-
-      <p style='margin-top:14px'>Any DuckDB / Connect overlay can swap
-        the Flink-based maintenance container for a Spark-based one by
-        layering <code>docker-compose.maintenance-spark.yml</code>
-        &mdash; one-flag change.</p>
-
-      <h3>Stack (pinned)</h3>
-      <table>
-        <thead><tr><th>component</th><th>version</th><th>notes</th></tr></thead>
-        <tbody>
-          <tr><td>Java</td><td>21</td><td>every module compiles to Java 21 bytecode</td></tr>
-          <tr><td>Apache Kafka</td><td>4.0.0</td><td>KRaft mode, mTLS-only SSL listener (<code>ssl.client.auth=required</code>)</td></tr>
-          <tr><td>Apache Iceberg</td><td>1.10.2</td><td>JDBC catalog on Postgres 17.10 + <code>S3FileIO</code> on alpine/minio</td></tr>
-          <tr><td>Apache Flink</td><td>2.0.2</td><td><code>iceberg-flink-runtime-2.0</code></td></tr>
-          <tr><td>Apache Spark</td><td>4.0.0</td><td>Scala 2.13, <code>iceberg-spark-runtime-4.0_2.13</code></td></tr>
-          <tr><td>DuckDB JDBC</td><td>1.4.3.0</td><td><code>iceberg</code> + <code>httpfs</code> extensions</td></tr>
-          <tr><td>Kafka Connect</td><td>cp-kafka-connect 7.8.0</td><td>+ <code>iceberg-kafka-connect</code> 1.9.2</td></tr>
-        </tbody>
-      </table>
-
-      <h3>Repo layout</h3>
-      <table>
-        <thead><tr><th>path</th><th>purpose</th></tr></thead>
-        <tbody>
-          <tr><td><code>common/</code></td><td>pure-Java helpers: env config, JDBC-catalog properties, mTLS properties, maintenance tuning constants</td></tr>
-          <tr><td><code>engine-flink/</code>, <code>engine-spark/</code>, <code>engine-duckdb/</code></td><td>per-engine ingest jobs (fat jars)</td></tr>
-          <tr><td><code>engines/connect/</code></td><td>Kafka Connect sink config + Dockerfile</td></tr>
-          <tr><td><code>flink-maintenance/</code></td><td>standalone Iceberg maintenance job (Flink)</td></tr>
-          <tr><td><code>spark-maintenance/</code></td><td>standalone Iceberg maintenance + compaction-strategy benchmark (Spark)</td></tr>
-          <tr><td><code>producer/</code></td><td>Java mTLS Kafka producer (bounded / continuous)</td></tr>
-          <tr><td><code>tools/</code></td><td><code>TableMetrics</code> &mdash; reads Iceberg facts from the catalog</td></tr>
-          <tr><td><code>benchmark/</code></td><td><code>run-scales.sh</code> + <code>compaction.sh</code> + <code>report.py</code></td></tr>
-          <tr><td><code>certs/</code></td><td>local-CA mTLS material generator (output git-ignored)</td></tr>
-        </tbody>
-      </table>
-
-      <h3>Maintenance tuning (single-sourced, every engine)</h3>
-      <ul>
-        <li>target data-file size: <strong>64 MB</strong>,
-          rewrite after 3 commits</li>
-        <li>snapshot retention: keep last <strong>3</strong>, expire
-          older than <strong>5 minutes</strong>, after 5 commits</li>
-        <li>orphan-file GC after <strong>10 commits</strong>, min file
-          age <strong>10 minutes</strong>,
-          <code>usePrefixListing=true</code> (S3/MinIO)</li>
-        <li>trigger lock: Postgres-backed
-          <code>JdbcLockFactory</code> wrapped in
-          <code>RetryingTriggerLockFactory</code> (5 &times; 3 s) to
-          absorb the JDBC cold-connect race on TaskManager startup
-          (ported from upstream PR #1)</li>
-        <li>compaction strategy: <code>binpack</code> (default) /
-          <code>sort</code> on <code>event_time</code> /
-          <code>zorder</code> on <code>(user_id, event_time)</code></li>
-      </ul>
     </div>
     """
 
