@@ -14,7 +14,7 @@ The whole stack runs in Docker Compose; no local JDK or Maven is needed.
 
 | Engine | Module | Writes | Maintenance |
 |---|---|---|---|
-| Apache Flink | `engine-flink` | `flink_db.events` | in-job `TableMaintenance` |
+| Apache Flink | `engine-flink` | `flink_db.events` | standalone `flink-maintenance` container (sibling to the ingest job) |
 | Apache Spark | `engine-spark` | `spark_db.events` | in-job native Iceberg procedures |
 | DuckDB | `engine-duckdb` | `duckdb_db.events` | standalone `MaintenanceJob` container |
 | Kafka Connect | `engines/connect` | `connect_db.events` | standalone `MaintenanceJob` container |
@@ -141,7 +141,11 @@ trigger-lock factory in a `RetryingTriggerLockFactory` (5 attempts, 3 s
 delay) to absorb the JDBC cold-connect race on the TaskManager at first
 deploy.
 
-* **Flink** runs `TableMaintenance` inside the ingest job.
+* **Flink** ingest job is intentionally maintenance-free; a sibling
+  `maintenance` container in the Flink overlay runs the same
+  `flink-maintenance.jar` against `flink_db.events`. Independent
+  lifecycles, failure domains and tuning (upstream PR #1 pattern,
+  without the K8s migration).
 * **Spark** runs `rewrite_data_files` / `expire_snapshots` procedures on a
   timer inside the Spark application.
 * **DuckDB** and **Kafka Connect** have no native compaction, so their overlays

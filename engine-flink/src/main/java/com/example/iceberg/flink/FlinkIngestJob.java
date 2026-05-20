@@ -9,7 +9,6 @@ import java.util.Properties;
 import com.example.iceberg.common.CatalogConfig;
 import com.example.iceberg.common.Env;
 import com.example.iceberg.common.KafkaTls;
-import com.example.iceberg.common.MaintenanceTuning;
 
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
@@ -32,19 +31,20 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.flink.CatalogLoader;
 import org.apache.iceberg.flink.FlinkSchemaUtil;
 import org.apache.iceberg.flink.TableLoader;
-import org.apache.iceberg.flink.maintenance.api.DeleteOrphanFiles;
-import org.apache.iceberg.flink.maintenance.api.ExpireSnapshots;
-import org.apache.iceberg.flink.maintenance.api.JdbcLockFactory;
-import org.apache.iceberg.flink.maintenance.api.RewriteDataFiles;
-import org.apache.iceberg.flink.maintenance.api.TableMaintenance;
-import org.apache.iceberg.flink.maintenance.api.TriggerLockFactory;
 import org.apache.iceberg.flink.sink.IcebergSink;
 import org.apache.iceberg.types.Types;
 
 /**
  * Flink ingest engine: reads JSON events from Kafka and appends them to the
- * Iceberg table {@code flink_db.events}, running Iceberg table maintenance
- * (data-file compaction + snapshot expiration) <b>in the same Flink job</b>.
+ * Iceberg table {@code flink_db.events}. <strong>Ingest-only</strong> &mdash;
+ * Iceberg table maintenance (data-file compaction, snapshot expiration,
+ * orphan-file GC) is deployed separately, as a sibling Docker Compose
+ * service running {@code flink-maintenance.jar} against the same table.
+ *
+ * <p>The split (upstream PR #1 pattern, applied here without the K8s
+ * Application-Mode migration) gives ingest and maintenance independent
+ * lifecycles, failure domains and tuning, and lets a stalled maintenance
+ * pass not back-pressure the ingest stream.
  *
  * <p>All knobs are environment-driven; see {@link CatalogConfig}.
  */
@@ -140,55 +140,11 @@ public final class FlinkIngestJob {
         .writeParallelism(1)
         .append();
 
-    // ---- in-job Iceberg table maintenance (compaction + snapshot expiration
-    //      + orphan-file GC) -----------------------------------------------
-    // Lock prevents two maintenance runs from colliding; it shares the
-    // catalog's Postgres. JdbcLockFactory auto-creates its lock table. The
-    // RetryingTriggerLockFactory wrapper absorbs the JDBC cold-connect race
-    // that otherwise surfaces on the TaskManager LockRemover.open() with
-    // numRestarts=1.
-    TriggerLockFactory lockFactory =
-        new RetryingTriggerLockFactory(
-            new JdbcLockFactory(
-                CatalogConfig.jdbcUri(),
-                dbName + "." + tableName,
-                Map.of(
-                    "jdbc.user", CatalogConfig.jdbcUser(),
-                    "jdbc.password", CatalogConfig.jdbcPassword(),
-                    JdbcLockFactory.INIT_LOCK_TABLES_PROPERTY, "true")),
-            5,
-            3_000L);
-
-    TableMaintenance.forTable(env, tableLoader, lockFactory)
-        .uidSuffix(MaintenanceTuning.UID_SUFFIX)
-        .rateLimit(Duration.ofMinutes(MaintenanceTuning.RATE_LIMIT_MINUTES))
-        .lockCheckDelay(Duration.ofSeconds(MaintenanceTuning.LOCK_CHECK_DELAY_SECONDS))
-        .add(
-            RewriteDataFiles.builder()
-                .scheduleOnCommitCount(MaintenanceTuning.REWRITE_ON_COMMIT_COUNT)
-                .targetFileSizeBytes(MaintenanceTuning.TARGET_FILE_SIZE_BYTES)
-                .partialProgressEnabled(true)
-                .partialProgressMaxCommits(MaintenanceTuning.REWRITE_PARTIAL_PROGRESS_MAX_COMMITS))
-        .add(
-            ExpireSnapshots.builder()
-                .scheduleOnCommitCount(MaintenanceTuning.EXPIRE_ON_COMMIT_COUNT)
-                .maxSnapshotAge(Duration.ofMinutes(MaintenanceTuning.MAX_SNAPSHOT_AGE_MINUTES))
-                .retainLast(MaintenanceTuning.RETAIN_LAST_SNAPSHOTS)
-                .deleteBatchSize(MaintenanceTuning.EXPIRE_DELETE_BATCH_SIZE))
-        .add(
-            // Orphan-file removal: cleans up files left behind by aborted
-            // writers / failed compactions. Least urgent / most expensive
-            // of the three, so it fires on the highest commit count.
-            // minAge stays well above the ingest commit cadence so
-            // in-flight files are never mistaken for orphans;
-            // usePrefixListing is correct for S3FileIO / MinIO.
-            DeleteOrphanFiles.builder()
-                .scheduleOnCommitCount(MaintenanceTuning.ORPHAN_ON_COMMIT_COUNT)
-                .minAge(Duration.ofMinutes(MaintenanceTuning.ORPHAN_MIN_AGE_MINUTES))
-                .usePrefixListing(MaintenanceTuning.ORPHAN_USE_PREFIX_LISTING)
-                .deleteBatchSize(MaintenanceTuning.ORPHAN_DELETE_BATCH_SIZE))
-        .append();
-
+    // Maintenance (RewriteDataFiles + ExpireSnapshots + DeleteOrphanFiles)
+    // lives in a sibling container running flink-maintenance.jar against
+    // the same flink_db.events table — see docker-compose.flink.yml. This
+    // ingest job is intentionally maintenance-free so the two halves can
+    // restart independently.
     env.execute("flink-kafka-to-iceberg");
   }
 }

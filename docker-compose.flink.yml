@@ -2,8 +2,12 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.flink.yml up --build
 #
-# Runs a Flink mini-cluster and submits engine-flink, which writes
-# `flink_db.events` and runs Iceberg table maintenance in the same job.
+# Runs a Flink mini-cluster that hosts the ingest job (engine-flink.jar,
+# writes flink_db.events) and a sibling standalone `maintenance` container
+# running flink-maintenance.jar against the same table for compaction,
+# snapshot expiration and orphan-file removal. The split (upstream PR #1
+# pattern, without the K8s Application-Mode migration) gives ingest and
+# maintenance independent lifecycles and failure domains.
 
 name: s3-table-dump
 
@@ -63,3 +67,28 @@ services:
       until (echo > /dev/tcp/flink-jobmanager/8081) 2>/dev/null; do sleep 3; done;
       echo 'submitting engine-flink job';
       flink run -d -m flink-jobmanager:8081 /jars/engine-flink.jar"
+
+  # Standalone maintenance container for flink_db.events — runs
+  # flink-maintenance.jar in its own local Flink mini-cluster, separate
+  # from the ingest cluster above. Same JdbcLockFactory + Postgres lock
+  # serialise it against any other writer; the RetryingTriggerLockFactory
+  # wrapper absorbs the JDBC cold-connect race.
+  #
+  # Layering docker-compose.maintenance-spark.yml swaps this Flink
+  # maintenance container for a Spark-based one against the same table.
+  maintenance:
+    image: eclipse-temurin:21-jre
+    depends_on:
+      builder:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    volumes:
+      - job:/jars:ro
+    environment:
+      ICEBERG_DB: flink_db
+      ICEBERG_TABLE: events
+      AWS_REGION: us-east-1
+    command: ["java", "-jar", "/jars/flink-maintenance.jar"]

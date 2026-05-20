@@ -39,10 +39,10 @@ from typing import Callable, Optional
 
 ENGINE_ORDER = ["flink", "spark", "duckdb", "connect"]
 ENGINE_COLORS = {
-    "flink":   "#e6526f",
-    "spark":   "#e25a1c",
-    "duckdb":  "#fae538",
-    "connect": "#5a8def",
+    "flink":   "#dc2626",  # red-600  -- crimson reads strong on white
+    "spark":   "#ea580c",  # orange-600
+    "duckdb":  "#ca8a04",  # yellow-700 -- darker for AA contrast on white
+    "connect": "#2563eb",  # blue-600
 }
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 DEFAULT_OUT = os.path.join(os.path.dirname(__file__), "report.html")
@@ -168,95 +168,122 @@ def pick_winner(values: list, mode: Optional[str]) -> Optional[int]:
 
 CSS = """
 :root {
-  --bg: #0f1419;
-  --panel: #161b22;
-  --panel-2: #1c232c;
-  --border: #2d333b;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #58a6ff;
-  --win: #2ea043;
-  --warn: #d29922;
-  --bad: #f85149;
+  --bg: #fafaf9;
+  --panel: #ffffff;
+  --panel-2: #f8fafc;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --text: #0f172a;
+  --text-2: #334155;
+  --muted: #64748b;
+  --accent: #2563eb;
+  --win: #16a34a;
+  --win-bg: #dcfce7;
+  --warn: #ca8a04;
+  --bad: #dc2626;
 }
 * { box-sizing: border-box; }
+html, body { background: var(--bg); }
 body {
   margin: 0;
-  font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
-        system-ui, sans-serif;
-  background: var(--bg);
+  font: 15px/1.65 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif;
   color: var(--text);
-  padding: 32px 48px;
-  max-width: 1280px;
+  padding: 48px 24px 96px;
+  max-width: 1080px;
   margin-left: auto;
   margin-right: auto;
 }
-h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; }
-h1 { font-size: 30px; margin: 0 0 4px; }
-h2 { font-size: 22px; margin: 56px 0 16px; padding-bottom: 8px;
-     border-bottom: 1px solid var(--border); }
-h3 { font-size: 16px; margin: 24px 0 12px; color: var(--accent); }
-p  { margin: 8px 0; }
-.subtitle { color: var(--muted); margin-bottom: 16px; font-size: 13px; }
+h1, h2, h3 { font-weight: 700; letter-spacing: -0.015em; color: var(--text); }
+h1 { font-size: 34px; line-height: 1.2; margin: 0 0 8px; }
+h2 { font-size: 24px; line-height: 1.3; margin: 64px 0 20px;
+     padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+h3 { font-size: 17px; line-height: 1.4; margin: 24px 0 12px; color: var(--text); }
+p  { margin: 8px 0; color: var(--text-2); }
+.subtitle { color: var(--muted); margin-bottom: 24px; font-size: 14px; }
 .verdict-chip {
-  display: inline-block; margin: 8px 0 16px;
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 6px 0 20px;
   padding: 6px 14px; border-radius: 999px;
-  background: rgba(46, 160, 67, 0.15); color: #7ee787;
+  background: var(--win-bg); color: var(--win);
   font-weight: 600; font-size: 13px;
+  border: 1px solid #bbf7d0;
 }
 .card { background: var(--panel); border: 1px solid var(--border);
-        border-radius: 8px; padding: 20px 24px; margin: 16px 0; }
-.tldr-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 24px;
+        border-radius: 12px; padding: 24px 28px; margin: 20px 0;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04),
+                    0 0 0 1px rgba(15, 23, 42, 0.02); }
+.tldr-grid { display: grid; grid-template-columns: 1fr; gap: 20px;
              align-items: start; }
 .winner-cards { display: grid; grid-template-columns: repeat(3, 1fr);
-                gap: 12px; margin: 16px 0 0; }
+                gap: 14px; margin: 20px 0 8px; }
 .winner-card { background: var(--panel-2); border: 1px solid var(--border);
-               border-radius: 8px; padding: 16px; }
+               border-radius: 10px; padding: 18px; }
 .winner-card .label { color: var(--muted); font-size: 11px;
-                      letter-spacing: 0.08em; text-transform: uppercase; }
-.winner-card .value { font-size: 22px; font-weight: 700;
-                      margin: 4px 0; }
-.winner-card .sub { color: var(--muted); font-size: 12px; }
-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-th, td { padding: 6px 12px; text-align: right; border-bottom: 1px solid var(--border); }
-th:first-child, td:first-child { text-align: left; color: var(--muted); }
-th { font-weight: 600; color: var(--text); white-space: nowrap; }
-.winner { background: rgba(46, 160, 67, 0.18); color: #7ee787;
-          font-weight: 600; border-radius: 4px; }
-.bad { color: var(--bad); }
-.warn { color: var(--warn); }
-.engine-flink { color: #e6526f; }
-.engine-spark { color: #e25a1c; }
-.engine-duckdb { color: #fae538; }
-.engine-connect { color: #5a8def; }
-.legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 12px;
-          color: var(--muted); font-size: 12px; }
-.legend-swatch { display: inline-block; width: 12px; height: 12px;
-                 border-radius: 3px; margin-right: 6px; vertical-align: -2px; }
-.callout { border-left: 3px solid var(--accent); padding: 10px 18px;
-           background: rgba(88, 166, 255, 0.08); border-radius: 0 6px 6px 0;
-           margin: 16px 0; }
+                      letter-spacing: 0.1em; text-transform: uppercase;
+                      font-weight: 600; }
+.winner-card .value { font-size: 26px; font-weight: 800; line-height: 1.1;
+                      margin: 6px 0 4px; }
+.winner-card .sub { color: var(--muted); font-size: 13px;
+                    font-variant-numeric: tabular-nums; }
+table { width: 100%; border-collapse: collapse;
+        font-variant-numeric: tabular-nums; font-size: 14px; }
+th, td { padding: 9px 12px; text-align: right;
+         border-bottom: 1px solid var(--border); }
+th:first-child, td:first-child { text-align: left; color: var(--text-2); }
+th { font-weight: 600; color: var(--muted); white-space: nowrap;
+     background: var(--panel-2); font-size: 12px;
+     text-transform: uppercase; letter-spacing: 0.04em; }
+tbody tr:hover { background: var(--panel-2); }
+.winner { background: var(--win-bg); color: #15803d;
+          font-weight: 700; border-radius: 4px; }
+.bad   { color: var(--bad);  font-weight: 600; }
+.warn  { color: var(--warn); font-weight: 600; }
+.engine-flink   { color: #b91c1c; font-weight: 600; }
+.engine-spark   { color: #c2410c; font-weight: 600; }
+.engine-duckdb  { color: #a16207; font-weight: 600; }
+.engine-connect { color: #1d4ed8; font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 18px; margin: 0 0 14px;
+          color: var(--muted); font-size: 13px; }
+.legend-swatch { display: inline-block; width: 14px; height: 14px;
+                 border-radius: 3px; margin-right: 7px; vertical-align: -2px; }
+.callout { border-left: 4px solid var(--accent); padding: 14px 20px;
+           background: #eff6ff; border-radius: 0 8px 8px 0;
+           margin: 18px 0; color: var(--text); }
 .callout.warn { border-color: var(--warn);
-                background: rgba(210, 153, 34, 0.08); }
+                background: #fefce8; }
 .callout.win  { border-color: var(--win);
-                background: rgba(46, 160, 67, 0.08); }
+                background: var(--win-bg); }
 .callout.bad  { border-color: var(--bad);
-                background: rgba(248, 81, 73, 0.08); }
-ul { padding-left: 20px; }
-li { margin: 4px 0; }
-.charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.chart-card { background: var(--panel-2); border: 1px solid var(--border);
-              border-radius: 8px; padding: 16px; }
-.chart-card h3 { margin-top: 0; }
-.chart-card svg { width: 100%; height: auto; display: block; }
-.deco { color: var(--muted); font-weight: 400; font-size: 12px; }
+                background: #fef2f2; }
+ul { padding-left: 22px; color: var(--text-2); }
+li { margin: 6px 0; }
+code { background: #f1f5f9; color: #334155; border-radius: 4px;
+       padding: 1px 6px; font: 13px/1 ui-monospace, "SF Mono", Menlo,
+       Consolas, monospace; }
+.charts-grid { display: grid; grid-template-columns: 1fr; gap: 24px;
+               margin-top: 8px; }
+.chart-card { background: var(--panel); border: 1px solid var(--border);
+              border-radius: 12px; padding: 24px 28px;
+              box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); }
+.chart-card h3 { margin-top: 0; margin-bottom: 4px; }
+.chart-card svg { width: 100%; height: auto; display: block;
+                  margin-top: 8px; }
+.chart-title-row { display: flex; justify-content: space-between;
+                   align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.deco { color: var(--muted); font-weight: 500; font-size: 12px;
+        text-transform: uppercase; letter-spacing: 0.05em;
+        background: var(--panel-2); padding: 3px 10px; border-radius: 999px;
+        border: 1px solid var(--border); }
 .matrix { width: 100%; }
-.matrix td:first-child { color: var(--text); font-weight: 600; }
-footer { color: var(--muted); margin-top: 64px; font-size: 12px;
-         border-top: 1px solid var(--border); padding-top: 16px; }
-@media (max-width: 900px) {
-  .tldr-grid, .charts-grid { grid-template-columns: 1fr; }
+.matrix td:first-child { color: var(--text); font-weight: 700; }
+footer { color: var(--muted); margin-top: 96px; font-size: 13px;
+         border-top: 1px solid var(--border); padding-top: 24px; }
+@media (max-width: 700px) {
+  body { padding: 24px 16px; }
   .winner-cards { grid-template-columns: 1fr; }
+  h1 { font-size: 28px; }
+  h2 { font-size: 21px; }
 }
 """
 
@@ -269,15 +296,15 @@ def svg_line_chart(
     x_labels: list[str],
     lower_is_better: bool = False,
     unit: str = "",
-    width: int = 480,
-    height: int = 260,
+    width: int = 960,
+    height: int = 380,
 ) -> str:
-    """Render an inline SVG line chart.
+    """Render an inline SVG line chart for the light theme.
 
     series: {engine_name: [value_per_x_point, ...]} -- None for missing data.
     x_labels: labels for x-axis (e.g. ['50k', '100k', '200k']).
     """
-    pad_l, pad_r, pad_t, pad_b = 48, 16, 24, 36
+    pad_l, pad_r, pad_t, pad_b = 76, 96, 24, 56
     plot_w = width - pad_l - pad_r
     plot_h = height - pad_t - pad_b
     if not x_labels:
@@ -289,81 +316,100 @@ def svg_line_chart(
         return ""
     ymin = 0
     ymax_raw = max(flat)
-    ymax = ymax_raw * 1.15 if ymax_raw > 0 else 1.0
-    # Pick a nice round step (5 ticks).
-    step = ymax / 4
+    ymax = ymax_raw * 1.18 if ymax_raw > 0 else 1.0
+    n_ticks = 5
+    step = ymax / (n_ticks - 1)
     n_x = len(x_labels)
 
     def xc(i): return pad_l + (i / max(n_x - 1, 1)) * plot_w
     def yc(v): return pad_t + plot_h - ((v - ymin) / max(ymax - ymin, 1e-9)) * plot_h
 
     # Y-grid + tick labels.
-    grid_lines = []
-    for k in range(5):
+    grid = []
+    for k in range(n_ticks):
         v = ymin + step * k
         y = yc(v)
-        grid_lines.append(
+        grid.append(
             f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + plot_w}" y2="{y:.1f}" '
-            f'stroke="#2d333b" stroke-width="1" stroke-dasharray="2,3" />'
+            f'stroke="#e2e8f0" stroke-width="1" />'
         )
-        grid_lines.append(
-            f'<text x="{pad_l - 6}" y="{y + 4:.1f}" text-anchor="end" '
-            f'fill="#8b949e" font-size="10">{v:,.0f}</text>'
+        grid.append(
+            f'<text x="{pad_l - 10}" y="{y + 4:.1f}" text-anchor="end" '
+            f'fill="#64748b" font-size="12" font-family="ui-sans-serif">'
+            f'{v:,.0f}</text>'
         )
 
-    # X-tick labels.
+    # X-axis labels with subtle event-count below.
     x_ticks = []
     for i, label in enumerate(x_labels):
         x = xc(i)
         x_ticks.append(
+            f'<text x="{x:.1f}" y="{height - 28}" text-anchor="middle" '
+            f'fill="#0f172a" font-size="14" font-weight="600">'
+            f'{html.escape(label)}</text>'
+        )
+        x_ticks.append(
             f'<text x="{x:.1f}" y="{height - 12}" text-anchor="middle" '
-            f'fill="#8b949e" font-size="11">{html.escape(label)}</text>'
+            f'fill="#94a3b8" font-size="11">events</text>'
         )
 
-    # Series polylines + markers.
+    # Series polylines + markers + end-of-line value labels.
     series_svg = []
     for engine, vals in series.items():
         color = ENGINE_COLORS.get(engine, "#888")
-        # Build the polyline from points that are not None.
-        pts = []
-        markers = []
+        pts, markers = [], []
+        last_pt = None
         for i, v in enumerate(vals):
             if isinstance(v, (int, float)) and not isinstance(v, bool):
-                pts.append(f"{xc(i):.1f},{yc(v):.1f}")
+                cx, cy = xc(i), yc(v)
+                pts.append(f"{cx:.1f},{cy:.1f}")
                 markers.append(
-                    f'<circle cx="{xc(i):.1f}" cy="{yc(v):.1f}" r="4" '
-                    f'fill="{color}" stroke="#0f1419" stroke-width="1.5">'
+                    f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="6" '
+                    f'fill="{color}" stroke="#ffffff" stroke-width="2.5">'
                     f'<title>{engine} @ {x_labels[i]}: {v:,.1f}{unit}</title>'
                     f'</circle>'
                 )
+                last_pt = (cx, cy, v)
         if pts:
             series_svg.append(
                 f'<polyline points="{" ".join(pts)}" fill="none" '
-                f'stroke="{color}" stroke-width="2" stroke-linecap="round" '
+                f'stroke="{color}" stroke-width="3" stroke-linecap="round" '
                 f'stroke-linejoin="round" />'
             )
             series_svg.extend(markers)
+            # End-of-line label for the final point.
+            if last_pt:
+                cx, cy, v = last_pt
+                series_svg.append(
+                    f'<text x="{cx + 12:.1f}" y="{cy + 5:.1f}" '
+                    f'fill="{color}" font-size="13" font-weight="700" '
+                    f'font-family="ui-sans-serif">'
+                    f'{engine} {v:,.0f}</text>'
+                )
 
-    # Axes.
+    # Axes (subtle).
     axes = (
-        f'<line x1="{pad_l}" y1="{pad_t}" x2="{pad_l}" y2="{pad_t + plot_h}" '
-        f'stroke="#2d333b" stroke-width="1" />'
         f'<line x1="{pad_l}" y1="{pad_t + plot_h}" x2="{pad_l + plot_w}" '
-        f'y2="{pad_t + plot_h}" stroke="#2d333b" stroke-width="1" />'
+        f'y2="{pad_t + plot_h}" stroke="#cbd5e1" stroke-width="1.5" />'
     )
 
-    direction_note = "lower is better" if lower_is_better else "higher is better"
+    direction_note = "↑ better" if not lower_is_better else "↓ better"
     legend = " ".join(
-        f"<span><span class='legend-swatch' style='background:{ENGINE_COLORS[e]}'></span>"
-        f"{e}</span>"
+        f"<span><span class='legend-swatch' "
+        f"style='background:{ENGINE_COLORS[e]}'></span>{e}</span>"
         for e in ENGINE_ORDER if e in series
     )
     return (
         f"<div class='chart-card'>"
-        f"<h3>{html.escape(title)} <span class='deco'>&middot; {direction_note}</span></h3>"
+        f"<div class='chart-title-row'>"
+        f"<h3>{html.escape(title)}</h3>"
+        f"<span class='deco'>{direction_note}</span>"
+        f"</div>"
         f"<div class='legend'>{legend}</div>"
-        f"<svg viewBox='0 0 {width} {height}' preserveAspectRatio='xMidYMid meet'>"
-        f"{''.join(grid_lines)}{axes}{''.join(series_svg)}{''.join(x_ticks)}"
+        f"<svg viewBox='0 0 {width} {height}' "
+        f"preserveAspectRatio='xMidYMid meet' "
+        f"role='img' aria-label='{html.escape(title)} line chart'>"
+        f"{''.join(grid)}{axes}{''.join(series_svg)}{''.join(x_ticks)}"
         f"</svg>"
         f"</div>"
     )
@@ -372,23 +418,42 @@ def svg_line_chart(
 # ---------- table builder ---------------------------------------------------
 
 def html_table(scale: int, results: dict) -> str:
-    engines = [e for e in ENGINE_ORDER if e in results]
-    if not engines:
-        return f"<p class='subtitle'>scale {scale:,}: no results</p>"
+    # Always show every engine as a column, even if it didn't complete at
+    # this scale — missing data renders as "—" with a "did not run"
+    # footnote, so the per-scale tables stay column-aligned.
+    engines = list(ENGINE_ORDER)
+    missing = [e for e in engines if e not in results]
     rows_html = []
     for label, accessor, fmt_str, mode in METRICS:
-        values = [accessor(results[e]) for e in engines]
-        winner_idx = pick_winner(values, mode)
+        values = [accessor(results[e]) if e in results else None for e in engines]
+        # Only pick a winner among engines that actually have data here.
+        active = [(i, v) for i, v in enumerate(values)
+                  if engines[i] in results]
+        active_values = [v for _, v in active]
+        winner_pos = pick_winner(active_values, mode)
+        winner_idx = active[winner_pos][0] if winner_pos is not None else None
         cells = []
         for i, v in enumerate(values):
-            cls = " class='winner'" if winner_idx is not None and i == winner_idx else ""
+            if engines[i] not in results:
+                cells.append("<td class='warn'>&mdash;</td>")
+                continue
+            cls = " class='winner'" if i == winner_idx else ""
             cells.append(f"<td{cls}>{html.escape(fmt(v, fmt_str))}</td>")
         rows_html.append(f"<tr><td>{html.escape(label)}</td>{''.join(cells)}</tr>")
     heads = "".join(f"<th class='engine-{e}'>{e}</th>" for e in engines)
+    footnote = ""
+    if missing:
+        listed = ", ".join(f"<span class='engine-{e}'>{e}</span>" for e in missing)
+        footnote = (
+            f"<p class='subtitle' style='margin-top:12px'>"
+            f"&mdash; did not complete at this scale: {listed} "
+            f"(see Caveats for context).</p>"
+        )
     return (
         f"<div class='card'><h3>scale: {scale:,} events per engine</h3>"
         f"<table><thead><tr><th>metric</th>{heads}</tr></thead>"
-        f"<tbody>{''.join(rows_html)}</tbody></table></div>"
+        f"<tbody>{''.join(rows_html)}</tbody></table>"
+        f"{footnote}</div>"
     )
 
 
@@ -445,7 +510,6 @@ def build_tldr(per_scale: dict) -> str:
         x_labels=[f"{s//1000}k" for s in scales],
         lower_is_better=False,
         unit=" rps",
-        width=560, height=260,
     )
 
     cards = (
@@ -556,10 +620,26 @@ def build_cross_scale(per_scale: dict) -> str:
             for e in engines_present
         }
 
+    def commit_cadence_s(r):
+        """Avg seconds between Iceberg commits = ingest_s / snapshots.
+
+        Engines that commit once at the end (snapshots=1) get the full
+        ingest_s back — accurate: their data was invisible until the
+        final commit. Multi-commit engines (DuckDB, Connect) get a much
+        smaller number, reflecting their commit cadence."""
+        snapshots = (r.get("table_stats") or {}).get("snapshots")
+        ingest_s = r.get("ingest_s")
+        if snapshots and ingest_s and snapshots > 0:
+            return round(ingest_s / snapshots, 2)
+        return None
+
     charts = [
         svg_line_chart("ingest throughput",      series(ingest_rps),
                        x_labels, lower_is_better=False, unit=" rps"),
         svg_line_chart("ingest time",            series(lambda r: r.get("ingest_s")),
+                       x_labels, lower_is_better=True, unit=" s"),
+        svg_line_chart("commit cadence (data-freshness latency)",
+                       series(commit_cadence_s),
                        x_labels, lower_is_better=True, unit=" s"),
         svg_line_chart("peak memory",            series(lambda r: r.get("peak_mem_mb")),
                        x_labels, lower_is_better=True, unit=" MB"),
@@ -740,43 +820,55 @@ def build_verdict(per_scale: dict) -> str:
         for scenario, dump, maint, why in matrix
     )
 
+    # Per-engine rps across scales for the findings table.
+    findings_rows = []
+    for e in engines:
+        rps_by_scale = [ingest_rps(per_scale[s].get(e) or {}) for s in scales]
+        mem_by_scale = [(per_scale[s].get(e) or {}).get("peak_mem_mb") for s in scales]
+        last_rps = rps_by_scale[-1] if rps_by_scale[-1] else 0
+        last_mem = mem_by_scale[-1] if mem_by_scale[-1] else 0
+        first_rps = next((x for x in rps_by_scale if x), None)
+        ratio = (rps_by_scale[-1] / first_rps) if (first_rps and rps_by_scale[-1]) else None
+        findings_rows.append(
+            f"<tr>"
+            f"<td><span class='engine-{e}'>{e}</span></td>"
+            f"<td>{fmt(last_rps, '{:,.0f}')}</td>"
+            f"<td>{fmt(last_mem, '{:,}')}</td>"
+            f"<td>{(str(round(ratio, 2)) + 'x') if ratio else '—'}</td>"
+            f"</tr>"
+        )
+    findings_table = "".join(findings_rows)
+
     return f"""
     <h2>Verdict &amp; recommendation</h2>
     <div class='card'>
-      <h3>Your proposal evaluated</h3>
-      <p>You suggested <strong>DuckDB or Kafka Connect for ingest, with
-        Spark or Flink running maintenance on the side</strong>. The
-        pattern is supported by the repo (docker-compose overlays for
-        either DuckDB or Connect + a standalone <code>maintenance</code>
-        container, swappable between Flink-based and
-        <code>docker-compose.maintenance-spark.yml</code> Spark-based) &mdash;
-        but the measured data argues for a small revision: between
-        DuckDB and Connect, <strong>DuckDB</strong> is the right ingest
-        engine. The bigger surprise is that <strong>Spark</strong> beats
-        both at every scale, so unless single-process simplicity or
-        fleet-management is a hard requirement, Spark is the default.</p>
+      <h3>Findings, from the measured data</h3>
+      <p>Ranking at the largest scale tested ({largest:,} events),
+        derived directly from the benchmark JSON:</p>
+      <table class='matrix'>
+        <thead><tr>
+          <th>engine</th>
+          <th>rps @ {largest:,}</th>
+          <th>peak mem @ {largest:,}</th>
+          <th>rps scaling ({scales[0]:,} &rarr; {largest:,})</th>
+        </tr></thead>
+        <tbody>{findings_table}</tbody>
+      </table>
       <ul>
-        <li><strong>Between DuckDB and Connect, DuckDB wins</strong>
-          &mdash; at {largest:,} events:
-          <span class='engine-duckdb'>DuckDB</span> {rps('duckdb'):,.0f} rps
-          vs <span class='engine-connect'>Connect</span>
-          {rps('connect') or 0:,.0f} rps. DuckDB also wins memory
-          ({mem('duckdb'):,} MB vs {mem('connect') or 0:,} MB), at the
-          cost of being single-node.</li>
-        <li><strong>But Spark beats both</strong> &mdash;
-          <span class='engine-spark'>Spark</span> {rps('spark'):,.0f} rps
-          at {largest:,}, with {mem('spark'):,} MB and CPU efficiency
-          comparable to DuckDB. If you don't need DuckDB's
-          single-process trait or Connect's fleet management, Spark is
-          the default ingest engine and also the maintenance engine.</li>
-        <li><strong>Maintenance engine</strong> &mdash; prefer
-          <span class='engine-spark'>Spark</span>. Spark's
-          <code>rewrite_data_files</code> procedure supports
-          <code>binpack</code>, <code>sort</code> and <code>zorder</code>;
-          Flink's table-maintenance API only does binpack. The Spark
-          maintenance container also stays small (no streaming job, just a
-          batch trigger), so the memory cost vs Flink-based maintenance is
-          modest.</li>
+        <li><strong>Fastest end-to-end:</strong>
+          <span class='engine-{fastest}'>{fastest}</span>
+          ({rps(fastest):,.0f} rps at {largest:,}).</li>
+        <li><strong>Leanest memory footprint:</strong>
+          <span class='engine-{leanest}'>{leanest}</span>
+          ({mem(leanest):,} MB at {largest:,}).</li>
+        <li><strong>Only engine with binpack + sort + zorder
+          compaction:</strong>
+          <span class='engine-spark'>Spark</span>. Flink's
+          table-maintenance API ships only binpack.</li>
+        <li><strong>Only engine with horizontal scale and
+          fleet-management out of the box:</strong>
+          <span class='engine-connect'>Kafka Connect</span>
+          (via <code>tasks.max</code> and the REST control plane).</li>
       </ul>
 
       <h3>Decision matrix</h3>
@@ -791,18 +883,18 @@ def build_verdict(per_scale: dict) -> str:
       </table>
 
       <div class='callout win'>
-        <strong>Top-line:</strong> the data inverts the small-scale
-        intuition. <span class='engine-spark'>Spark</span> wins raw
-        throughput at every scale tested ({rps('spark'):,.0f} rps at
-        {largest:,}, with effectively flat memory). Default ingest engine
-        is therefore Spark. Use <span class='engine-duckdb'>DuckDB</span>
-        only when memory or single-process simplicity matters more than
-        speed ({mem('duckdb'):,} MB at {largest:,}, leanest by far). Use
-        <span class='engine-connect'>Kafka Connect</span> only when you
-        need a fleet-managed REST-configured worker (slowest measured,
-        {rps('connect') or 0:,.0f} rps at {largest:,}).
-        <span class='engine-spark'>Spark</span> is also the right side
-        maintenance engine in every case &mdash; the only one that ships
+        <strong>Top-line:</strong>
+        <span class='engine-{fastest}'>{fastest}</span> wins raw
+        throughput at every scale tested ({rps(fastest):,.0f} rps at
+        {largest:,}, with effectively flat memory). Default ingest
+        engine is therefore {fastest}. Use
+        <span class='engine-{leanest}'>{leanest}</span> when memory or
+        single-process simplicity outranks speed ({mem(leanest):,} MB
+        at {largest:,}, leanest measured). Use
+        <span class='engine-connect'>Kafka Connect</span> when fleet
+        management of a REST-configured worker matters more than raw
+        rps. <span class='engine-spark'>Spark</span> is the right side
+        maintenance engine in every case &mdash; only one with
         binpack + sort + zorder.
       </div>
     </div>
@@ -836,6 +928,15 @@ def build_caveats() -> str:
           per run by default); other engines often commit once at the end.
           That's why <code>drain_s</code> is non-zero for DuckDB and ~0
           for the others.</li>
+        <li><strong>Flink topology change since these numbers were
+          taken:</strong> the ingest job no longer runs maintenance
+          in-job &mdash; it now lives in a sibling container running
+          <code>flink-maintenance.jar</code>. At these scales Flink
+          committed once at the end (<code>snapshots = 1</code>), so the
+          in-job maintenance never actually fired (it needs
+          <code>scheduleOnCommitCount = 3</code> commits). Throughput
+          numbers shown are therefore representative of the split
+          topology too.</li>
         <li><strong>Demo defaults.</strong> MinIO
           <code>admin/password</code>, Postgres <code>iceberg/iceberg</code>,
           keystore <code>changeit</code> &mdash; do not use in
