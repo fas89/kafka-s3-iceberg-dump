@@ -122,24 +122,40 @@ def producer_rps(r: dict) -> Optional[float]:
     return (r.get("producer") or {}).get("throughput_rps")
 
 
-# Metric spec: (label, accessor, format, "lower"|"higher"|None)
-METRICS: list[tuple[str, Callable[[dict], object], str, Optional[str]]] = [
-    ("records requested",      lambda r: r.get("requested"),         "{:,}",   None),
-    ("rows landed",            lambda r: r.get("final_rows"),        "{:,}",   None),
-    ("row count exact",        lambda r: "yes" if r.get("correct") else "NO", "{}", None),
-    ("producer rps",           producer_rps,                          "{:,.1f}", "higher"),
-    ("startup s",              lambda r: r.get("startup_s"),          "{:,}",   "lower"),
-    ("drain s",                lambda r: r.get("consume_drain_s"),    "{:,}",   "lower"),
-    ("ingest s",               lambda r: r.get("ingest_s"),           "{:,}",   "lower"),
-    ("ingest rps",             ingest_rps,                            "{:,.1f}", "higher"),
-    ("peak mem MB",            lambda r: r.get("peak_mem_mb"),        "{:,}",   "lower"),
-    ("avg cpu %",              lambda r: r.get("cpu_pct_avg"),        "{:,}",   "lower"),
-    ("write window s",         lambda r: stat(r, "write_window_s"),   "{:,.1f}", None),
-    ("data files",             lambda r: stat(r, "data_files"),       "{:,}",   None),
-    ("snapshots",              lambda r: stat(r, "snapshots"),        "{:,}",   None),
-    ("compactions",            lambda r: stat(r, "compactions"),      "{:,}",   None),
-    ("files rewritten",        lambda r: stat(r, "compaction_files_rewritten"), "{:,}", None),
-    ("avg data file KB",       avg_file_kb,                           "{:,.1f}", None),
+# Metric spec: (label, accessor, format, "lower"|"higher"|None, description)
+METRICS: list[tuple[str, Callable[[dict], object], str, Optional[str], str]] = [
+    ("records requested",      lambda r: r.get("requested"),         "{:,}",   None,
+     "Events the harness asked the producer to send."),
+    ("rows landed",            lambda r: r.get("final_rows"),        "{:,}",   None,
+     "Rows the engine actually wrote to Iceberg (polled via the catalog)."),
+    ("row count exact",        lambda r: "yes" if r.get("correct") else "NO", "{}", None,
+     "Correctness verdict: rows landed == records requested?"),
+    ("producer rps",           producer_rps,                          "{:,.1f}", "higher",
+     "Producer's own throughput in events / second (from its on-shutdown JSON line)."),
+    ("startup s",              lambda r: r.get("startup_s"),          "{:,}",   "lower",
+     "Wall-clock seconds: producer start → first Iceberg commit. Engine reaction time. For single-commit engines this equals ingest s."),
+    ("drain s",                lambda r: r.get("consume_drain_s"),    "{:,}",   "lower",
+     "Wall-clock seconds: producer finish → last Iceberg commit. Tail latency after Kafka is done."),
+    ("ingest s",               lambda r: r.get("ingest_s"),           "{:,}",   "lower",
+     "Wall-clock seconds: producer start → last Iceberg commit. End-to-end ingest."),
+    ("ingest rps",             ingest_rps,                            "{:,.1f}", "higher",
+     "End-to-end throughput: records requested / ingest s."),
+    ("peak mem MB",            lambda r: r.get("peak_mem_mb"),        "{:,}",   "lower",
+     "Maximum summed memory across the engine's own containers during ingest."),
+    ("avg cpu %",              lambda r: r.get("cpu_pct_avg"),        "{:,}",   "lower",
+     "Mean CPU% summed across the engine's own containers during ingest."),
+    ("write window s",         lambda r: stat(r, "write_window_s"),   "{:,.1f}", None,
+     "Time span between first and last Iceberg append snapshot."),
+    ("data files",             lambda r: stat(r, "data_files"),       "{:,}",   None,
+     "Iceberg data files in the table after ingest (more = more small files to compact)."),
+    ("snapshots",              lambda r: stat(r, "snapshots"),        "{:,}",   None,
+     "Total Iceberg snapshots in the table. Higher = more commits = fresher reads."),
+    ("compactions",            lambda r: stat(r, "compactions"),      "{:,}",   None,
+     "Number of rewrite_data_files operations that ran (replace snapshots)."),
+    ("files rewritten",        lambda r: stat(r, "compaction_files_rewritten"), "{:,}", None,
+     "Total data files rewritten by compaction across all replace snapshots."),
+    ("avg data file KB",       avg_file_kb,                           "{:,.1f}", None,
+     "Derived: total size / data files / 1024. Larger after compaction."),
 ]
 
 
@@ -300,6 +316,7 @@ def svg_line_chart(
     x_labels: list[str],
     lower_is_better: bool = False,
     unit: str = "",
+    description: str = "",
     width: int = 960,
     height: int = 380,
 ) -> str:
@@ -403,12 +420,17 @@ def svg_line_chart(
         f"style='background:{ENGINE_COLORS[e]}'></span>{e}</span>"
         for e in ENGINE_ORDER if e in series
     )
+    desc_html = (
+        f"<div style='color:var(--muted);font-size:13px;"
+        f"margin:-4px 0 10px;'>{description}</div>"
+    ) if description else ""
     return (
         f"<div class='chart-card'>"
         f"<div class='chart-title-row'>"
         f"<h3>{html.escape(title)}</h3>"
         f"<span class='deco'>{direction_note}</span>"
         f"</div>"
+        f"{desc_html}"
         f"<div class='legend'>{legend}</div>"
         f"<svg width='{width}' height='{height}' "
         f"viewBox='0 0 {width} {height}' "
@@ -429,7 +451,7 @@ def html_table(scale: int, results: dict) -> str:
     engines = list(ENGINE_ORDER)
     missing = [e for e in engines if e not in results]
     rows_html = []
-    for label, accessor, fmt_str, mode in METRICS:
+    for label, accessor, fmt_str, mode, desc in METRICS:
         values = [accessor(results[e]) if e in results else None for e in engines]
         # Only pick a winner among engines that actually have data here.
         active = [(i, v) for i, v in enumerate(values)
@@ -444,7 +466,16 @@ def html_table(scale: int, results: dict) -> str:
                 continue
             cls = " class='winner'" if i == winner_idx else ""
             cells.append(f"<td{cls}>{html.escape(fmt(v, fmt_str))}</td>")
-        rows_html.append(f"<tr><td>{html.escape(label)}</td>{''.join(cells)}</tr>")
+        # Metric label cell has a dotted underline + tooltip with the
+        # description, and a small "?" hint so users know to hover.
+        label_cell = (
+            f"<td title=\"{html.escape(desc)}\" "
+            f"style='border-bottom-style:solid;cursor:help;"
+            f"text-decoration:underline dotted var(--border-strong);"
+            f"text-underline-offset:3px;'>"
+            f"{html.escape(label)}</td>"
+        )
+        rows_html.append(f"<tr>{label_cell}{''.join(cells)}</tr>")
     heads = "".join(f"<th class='engine-{e}'>{e}</th>" for e in engines)
     footnote = ""
     if missing:
@@ -508,6 +539,9 @@ def build_tldr(per_scale: dict) -> str:
         x_labels=[f"{s//1000}k" for s in scales],
         lower_is_better=False,
         unit=" rps",
+        description="Records ingested per second, end to end "
+                    "(requested / ingest_s). Steeper line = the engine "
+                    "got faster as data grew.",
     )
 
     # ---- one card per engine: every engine gets a top-of-page slot ------
@@ -518,10 +552,30 @@ def build_tldr(per_scale: dict) -> str:
             return ingest_s / snaps
         return None
 
+    STAT_DESC = {
+        "rps":      "End-to-end ingest throughput: records requested / ingest_s.",
+        "peak mem": "Peak memory across the engine's own containers.",
+        "cadence":  "Avg seconds between Iceberg commits (ingest_s / snapshots). Lower = fresher reads.",
+        "scaling":  "Ratio of largest-scale rps to smallest-scale rps. >1 = throughput improved with scale.",
+    }
+
     def stat_cell(label, value):
+        # The label may have "★ best" appended; strip it for the tooltip lookup.
+        bare = label.split("<", 1)[0].strip()
+        desc = STAT_DESC.get(bare, "")
+        # Prefix match for dynamic labels like "scaling 50k→200k".
+        if not desc:
+            for k, v in STAT_DESC.items():
+                if bare.startswith(k):
+                    desc = v
+                    break
+        title_attr = f" title=\"{html.escape(desc)}\"" if desc else ""
+        cue = ("text-decoration:underline dotted var(--border);"
+               "text-underline-offset:3px;cursor:help;") if desc else ""
         return (f"<div style='display:flex;justify-content:space-between;"
                 f"font-size:12px;color:var(--muted);'>"
-                f"<span>{label}</span><span style='color:var(--text);"
+                f"<span{title_attr} style='{cue}'>{label}</span>"
+                f"<span style='color:var(--text);"
                 f"font-variant-numeric:tabular-nums;font-weight:600'>"
                 f"{value}</span></div>")
 
@@ -683,19 +737,37 @@ def build_cross_scale(per_scale: dict) -> str:
     # (latency / memory / startup / cpu / drain) that explain HOW the
     # throughput shape happens.
     charts = [
-        svg_line_chart("ingest time",            series(lambda r: r.get("ingest_s")),
-                       x_labels, lower_is_better=True, unit=" s"),
-        svg_line_chart("commit cadence",
-                       series(commit_cadence_s),
-                       x_labels, lower_is_better=True, unit=" s"),
-        svg_line_chart("peak memory",            series(lambda r: r.get("peak_mem_mb")),
-                       x_labels, lower_is_better=True, unit=" MB"),
-        svg_line_chart("startup time",           series(lambda r: r.get("startup_s")),
-                       x_labels, lower_is_better=True, unit=" s"),
-        svg_line_chart("avg cpu",                series(lambda r: r.get("cpu_pct_avg")),
-                       x_labels, lower_is_better=True, unit=" %"),
-        svg_line_chart("drain time",             series(lambda r: r.get("consume_drain_s")),
-                       x_labels, lower_is_better=True, unit=" s"),
+        svg_line_chart("ingest time", series(lambda r: r.get("ingest_s")),
+            x_labels, lower_is_better=True, unit=" s",
+            description="Wall-clock seconds from producer start to the "
+                        "last Iceberg commit. Lower = engine drained "
+                        "the topic faster."),
+        svg_line_chart("commit cadence", series(commit_cadence_s),
+            x_labels, lower_is_better=True, unit=" s",
+            description="Average seconds between Iceberg commits "
+                        "(ingest_s / snapshots). Lower = readers see "
+                        "fresh rows sooner."),
+        svg_line_chart("peak memory", series(lambda r: r.get("peak_mem_mb")),
+            x_labels, lower_is_better=True, unit=" MB",
+            description="Maximum summed memory across the engine's own "
+                        "containers, sampled every 5 s. Flat line = "
+                        "memory doesn't grow with data."),
+        svg_line_chart("startup time", series(lambda r: r.get("startup_s")),
+            x_labels, lower_is_better=True, unit=" s",
+            description="Seconds from producer start to the first "
+                        "Iceberg commit. Lower = engine reacted to data "
+                        "faster. For single-commit engines this equals "
+                        "ingest time."),
+        svg_line_chart("avg cpu", series(lambda r: r.get("cpu_pct_avg")),
+            x_labels, lower_is_better=True, unit=" %",
+            description="Mean CPU% across the engine's own containers "
+                        "during ingest. Higher load on the same machine "
+                        "= less headroom for other work."),
+        svg_line_chart("drain time", series(lambda r: r.get("consume_drain_s")),
+            x_labels, lower_is_better=True, unit=" s",
+            description="Wall-clock seconds from producer finish to "
+                        "the last Iceberg commit. The tail latency "
+                        "after Kafka is already done."),
     ]
 
     return (
