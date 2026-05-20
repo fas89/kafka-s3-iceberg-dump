@@ -525,13 +525,24 @@ def build_tldr(per_scale: dict) -> str:
                 f"font-variant-numeric:tabular-nums;font-weight:600'>"
                 f"{value}</span></div>")
 
+    # Find per-axis winners at the largest scale so we can badge the cards.
+    rps_vals = {e: ingest_rps(top.get(e) or {}) or 0 for e in ENGINE_ORDER}
+    mem_vals = {e: top.get(e, {}).get("peak_mem_mb") or 1e9 for e in ENGINE_ORDER}
+    cad_vals = {e: commit_cadence(top.get(e) or {}) or 1e9 for e in ENGINE_ORDER}
+    win_rps = max(rps_vals, key=rps_vals.get) if any(rps_vals.values()) else None
+    win_mem = min(mem_vals, key=mem_vals.get)
+    win_cad = min(cad_vals, key=cad_vals.get) if any(v < 1e9 for v in cad_vals.values()) else None
+
+    def badge(is_win):
+        return ("<span style='color:#16a34a;font-size:11px;"
+                "margin-left:4px;'>★ best</span>") if is_win else ""
+
     cards_html = []
     for e in ENGINE_ORDER:
         r = top.get(e, {})
         rps = ingest_rps(r) or 0
         mem = r.get("peak_mem_mb") or 0
         cad = commit_cadence(r) or 0
-        # rps growth ratio: largest / smallest scale
         first_rps = ingest_rps(per_scale[scales[0]].get(e) or {})
         last_rps = ingest_rps(per_scale[scales[-1]].get(e) or {})
         ratio = (last_rps / first_rps) if (first_rps and last_rps) else None
@@ -540,14 +551,29 @@ def build_tldr(per_scale: dict) -> str:
             f"  <div class='label'>@ {largest:,} events</div>"
             f"  <div class='value engine-{e}'>{e}</div>"
             f"  <div style='margin-top:10px;display:flex;flex-direction:column;gap:4px'>"
-            f"    {stat_cell('rps', f'{rps:,.0f}' if rps else '—')}"
-            f"    {stat_cell('peak mem', f'{mem:,} MB' if mem else '—')}"
-            f"    {stat_cell('cadence', f'{cad:.2f} s' if cad else '—')}"
+            f"    {stat_cell('rps' + badge(e == win_rps), f'{rps:,.0f}' if rps else '—')}"
+            f"    {stat_cell('peak mem' + badge(e == win_mem), f'{mem:,} MB' if mem else '—')}"
+            f"    {stat_cell('cadence' + badge(e == win_cad), f'{cad:.2f} s' if cad else '—')}"
             f"    {stat_cell(f'scaling {scales[0]//1000}k→{scales[-1]//1000}k', f'{ratio:.2f}×' if ratio else '—')}"
             f"  </div>"
             f"</div>"
         )
     cards = f"<div class='winner-cards' style='grid-template-columns:repeat(4,1fr)'>{''.join(cards_html)}</div>"
+
+    # Bold one-line headline verdict above the cards.
+    headline = (
+        f"<div style='font-size:18px;font-weight:600;line-height:1.4;"
+        f"margin:0 0 18px;color:var(--text);'>"
+        f"<span class='engine-{win_rps}'>{win_rps}</span> wins throughput "
+        f"({rps_vals[win_rps]:,.0f} rps @ {largest:,}). "
+        f"<span class='engine-{win_mem}'>{win_mem}</span> wins memory "
+        f"({int(mem_vals[win_mem]):,} MB) and freshness "
+        f"({cad_vals[win_cad]:.2f} s cadence). "
+        f"<span class='engine-spark'>Spark</span> is the maintenance "
+        f"engine (only one with binpack + sort + zorder)."
+        f"</div>"
+    )
+    cards = headline + cards
 
     return (
         f"<div class='card'>"
