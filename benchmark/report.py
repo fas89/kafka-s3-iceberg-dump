@@ -497,25 +497,6 @@ def build_tldr(per_scale: dict) -> str:
     if not engines:
         return "<div class='callout warn'>No engines completed at the largest scale.</div>"
 
-    fastest = max(engines, key=lambda e: ingest_rps(top[e]) or 0)
-    leanest = min(engines, key=lambda e: top[e].get("peak_mem_mb") or 1e9)
-
-    # Stability across scales: lowest |1 - rps_ratio|.
-    def rps_ratio(engine):
-        first = ingest_rps(per_scale[scales[0]].get(engine) or {})
-        last  = ingest_rps(per_scale[scales[-1]].get(engine) or {})
-        if not first or not last:
-            return None
-        return last / first
-
-    ratios = {e: rps_ratio(e) for e in engines}
-    valid_ratios = {e: r for e, r in ratios.items() if r is not None}
-    if valid_ratios:
-        most_stable = min(valid_ratios, key=lambda e: abs(1 - valid_ratios[e]))
-        stable_value = valid_ratios[most_stable]
-    else:
-        most_stable, stable_value = engines[0], None
-
     # Hero chart: ingest throughput vs scale.
     series = {
         e: [ingest_rps(per_scale[s].get(e) or {}) for s in scales]
@@ -529,28 +510,41 @@ def build_tldr(per_scale: dict) -> str:
         unit=" rps",
     )
 
-    cards = (
-        f"<div class='winner-cards'>"
-        f"  <div class='winner-card'>"
-        f"    <div class='label'>fastest @ {largest:,}</div>"
-        f"    <div class='value engine-{fastest}'>{fastest}</div>"
-        f"    <div class='sub'>{ingest_rps(top[fastest]) or 0:,.0f} rps, "
-        f"      {top[fastest].get('ingest_s', 0)} s</div>"
-        f"  </div>"
-        f"  <div class='winner-card'>"
-        f"    <div class='label'>leanest @ {largest:,}</div>"
-        f"    <div class='value engine-{leanest}'>{leanest}</div>"
-        f"    <div class='sub'>{top[leanest].get('peak_mem_mb', 0):,} MB peak</div>"
-        f"  </div>"
-        f"  <div class='winner-card'>"
-        f"    <div class='label'>most stable rps</div>"
-        f"    <div class='value engine-{most_stable}'>{most_stable}</div>"
-        f"    <div class='sub'>"
-        f"      {('{:.2f}x rps {first}k -> {last}k'.format(stable_value, first=scales[0]//1000, last=scales[-1]//1000)) if stable_value else 'no data'}"
-        f"    </div>"
-        f"  </div>"
-        f"</div>"
-    )
+    # ---- one card per engine: every engine gets a top-of-page slot ------
+    def commit_cadence(r):
+        snaps = (r.get("table_stats") or {}).get("snapshots")
+        ingest_s = r.get("ingest_s")
+        if snaps and ingest_s and snaps > 0:
+            return ingest_s / snaps
+        return None
+
+    def stat_cell(label, value):
+        return (f"<div style='display:flex;justify-content:space-between;"
+                f"font-size:12px;color:var(--muted);'>"
+                f"<span>{label}</span><span style='color:var(--text);"
+                f"font-variant-numeric:tabular-nums;font-weight:600'>"
+                f"{value}</span></div>")
+
+    cards_html = []
+    for e in ENGINE_ORDER:
+        r = top.get(e, {})
+        rps = ingest_rps(r) or 0
+        mem = r.get("peak_mem_mb") or 0
+        ing = r.get("ingest_s") or 0
+        cad = commit_cadence(r) or 0
+        cards_html.append(
+            f"<div class='winner-card'>"
+            f"  <div class='label'>@ {largest:,} events</div>"
+            f"  <div class='value engine-{e}'>{e}</div>"
+            f"  <div style='margin-top:10px;display:flex;flex-direction:column;gap:4px'>"
+            f"    {stat_cell('rps', f'{rps:,.0f}' if rps else '—')}"
+            f"    {stat_cell('ingest', f'{ing} s' if ing else '—')}"
+            f"    {stat_cell('peak mem', f'{mem:,} MB' if mem else '—')}"
+            f"    {stat_cell('cadence', f'{cad:.2f} s' if cad else '—')}"
+            f"  </div>"
+            f"</div>"
+        )
+    cards = f"<div class='winner-cards' style='grid-template-columns:repeat(4,1fr)'>{''.join(cards_html)}</div>"
 
     return (
         f"<div class='card'>"
