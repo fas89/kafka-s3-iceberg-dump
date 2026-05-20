@@ -161,9 +161,11 @@ deploy.
 ## Benchmark
 
 ```bash
-benchmark/run.sh flink 50000      # one engine: clean stack, produce N, measure
-benchmark/run-all.sh 50000        # all four engines + a comparison table
-benchmark/compaction.sh 200000    # binpack vs sort vs zorder compaction speed
+benchmark/run.sh flink 50000             # one engine: clean stack, produce N, measure
+benchmark/run-all.sh 50000               # all four engines + a transposed comparison
+benchmark/run-scales.sh 50000 100000 200000   # multi-scale sweep, results per scale
+benchmark/compaction.sh 200000           # binpack vs sort vs zorder compaction speed
+python3 benchmark/report.py              # render benchmark/report.html from results
 ```
 
 `run.sh` brings up a clean stack, runs the producer in bounded mode, then
@@ -193,10 +195,26 @@ prints a **transposed** comparison table (metrics on rows, engines on
 columns) with derived stats (e.g. `avg data file (KB)` from `size_bytes /
 data_files`). The host needs `python3` (built in on macOS / most Linuxes).
 
+`run-scales.sh` runs `run-all.sh` at every listed scale on a fresh stack
+per engine and stashes each scale's per-engine JSON into
+`benchmark/results/scale-<N>/`. Each engine run is wrapped in a hard 600 s
+wall-clock cap (override with `PER_ENGINE_TIMEOUT_S=...`) so a stuck engine
+can't sink the whole sweep.
+
 `compaction.sh` is a separate, controlled comparison: it writes an identical
 many-small-files table and runs Iceberg's `rewrite_data_files` with each
 strategy — `binpack`, `sort`, `zorder` — timing each. Strategy comparison is
 Spark-driven (Flink's table-maintenance API only does binpack).
+
+`report.py` reads every `benchmark/results/scale-<N>/<engine>.json` and any
+`benchmark/results/compaction-<strategy>.json` present and renders a
+self-contained `benchmark/report.html` — header verdict chip, hero
+throughput chart, per-scale transposed tables, cross-scale line charts
+(ingest rps / time / memory / startup / cpu / drain across the scales),
+a scaling-factor table (stable / improved / degraded per engine), a
+schema-handling section, the compaction-strategy comparison, a decision
+matrix (which engine for which scenario), caveats and a reproducibility
+checklist. No external CSS/JS/fonts — one HTML file you can email.
 
 ## Tests
 
