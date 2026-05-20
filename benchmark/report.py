@@ -530,17 +530,20 @@ def build_tldr(per_scale: dict) -> str:
         r = top.get(e, {})
         rps = ingest_rps(r) or 0
         mem = r.get("peak_mem_mb") or 0
-        ing = r.get("ingest_s") or 0
         cad = commit_cadence(r) or 0
+        # rps growth ratio: largest / smallest scale
+        first_rps = ingest_rps(per_scale[scales[0]].get(e) or {})
+        last_rps = ingest_rps(per_scale[scales[-1]].get(e) or {})
+        ratio = (last_rps / first_rps) if (first_rps and last_rps) else None
         cards_html.append(
             f"<div class='winner-card'>"
             f"  <div class='label'>@ {largest:,} events</div>"
             f"  <div class='value engine-{e}'>{e}</div>"
             f"  <div style='margin-top:10px;display:flex;flex-direction:column;gap:4px'>"
             f"    {stat_cell('rps', f'{rps:,.0f}' if rps else '—')}"
-            f"    {stat_cell('ingest', f'{ing} s' if ing else '—')}"
             f"    {stat_cell('peak mem', f'{mem:,} MB' if mem else '—')}"
             f"    {stat_cell('cadence', f'{cad:.2f} s' if cad else '—')}"
+            f"    {stat_cell(f'scaling {scales[0]//1000}k→{scales[-1]//1000}k', f'{ratio:.2f}×' if ratio else '—')}"
             f"  </div>"
             f"</div>"
         )
@@ -588,7 +591,7 @@ def build_implementation() -> str:
 
 def build_methodology(scales: list[int]) -> str:
     return f"""
-    <h2>How it's measured</h2>
+    <h2>Method &amp; caveats</h2>
     <div class='card'>
       <p>Java producer &rarr; mTLS Kafka &rarr; each engine writes
         <code>&lt;engine&gt;_db.events</code> on MinIO via a shared
@@ -599,6 +602,16 @@ def build_methodology(scales: list[int]) -> str:
         <code>docker stats</code> sampled every 5 s across each engine's
         containers; correctness by polling rows until
         <code>rows &ge; requested</code>.</p>
+      <ul style='margin-top:8px'>
+        <li>Single host (Docker Desktop, macOS); numbers reproducible
+          but not multi-node-comparable.</li>
+        <li>Latency floors: Flink commits on checkpoint (default 30 s),
+          Connect on its interval-ms (default 5 s), DuckDB
+          micro-batches; Spark + Flink commit once at end of bounded
+          run.</li>
+        <li>mTLS overhead is paid equally by every engine &mdash;
+          comparison is fair, absolute rps would rise without mTLS.</li>
+      </ul>
     </div>
     """
 
@@ -753,39 +766,9 @@ def build_verdict(per_scale: dict) -> str:
         for scenario, dump, maint, why in matrix
     )
 
-    # Per-engine rps across scales for the findings table.
-    findings_rows = []
-    for e in engines:
-        rps_by_scale = [ingest_rps(per_scale[s].get(e) or {}) for s in scales]
-        mem_by_scale = [(per_scale[s].get(e) or {}).get("peak_mem_mb") for s in scales]
-        last_rps = rps_by_scale[-1] if rps_by_scale[-1] else 0
-        last_mem = mem_by_scale[-1] if mem_by_scale[-1] else 0
-        first_rps = next((x for x in rps_by_scale if x), None)
-        ratio = (rps_by_scale[-1] / first_rps) if (first_rps and rps_by_scale[-1]) else None
-        findings_rows.append(
-            f"<tr>"
-            f"<td><span class='engine-{e}'>{e}</span></td>"
-            f"<td>{fmt(last_rps, '{:,.0f}')}</td>"
-            f"<td>{fmt(last_mem, '{:,}')}</td>"
-            f"<td>{(str(round(ratio, 2)) + 'x') if ratio else '—'}</td>"
-            f"</tr>"
-        )
-    findings_table = "".join(findings_rows)
-
     return f"""
     <h2>Verdict</h2>
     <div class='card'>
-      <table class='matrix'>
-        <thead><tr>
-          <th>engine</th>
-          <th>rps @ {largest:,}</th>
-          <th>peak mem</th>
-          <th>rps scaling ({scales[0]//1000}k &rarr; {largest//1000}k)</th>
-        </tr></thead>
-        <tbody>{findings_table}</tbody>
-      </table>
-
-      <h3 style='margin-top:24px'>Pick by scenario</h3>
       <table class='matrix'>
         <thead><tr>
           <th style='width:26%'>scenario</th>
@@ -795,7 +778,6 @@ def build_verdict(per_scale: dict) -> str:
         </tr></thead>
         <tbody>{matrix_html}</tbody>
       </table>
-
       <div class='callout win' style='margin-top:20px'>
         Default ingest engine: <span class='engine-{fastest}'>{fastest}</span>
         (fastest at every scale tested,
@@ -808,24 +790,7 @@ def build_verdict(per_scale: dict) -> str:
 
 
 def build_caveats() -> str:
-    return """
-    <h2>Caveats</h2>
-    <div class='card'>
-      <ul>
-        <li><strong>Single host, Docker Desktop on macOS.</strong>
-          Numbers are reproducible but don't generalize to multi-node
-          production.</li>
-        <li><strong>Engine-imposed latency floors:</strong> Flink commits
-          on checkpoint (default 30 s); Connect commits on its
-          interval-ms (default 5 s); DuckDB micro-batches every
-          ~few-hundred-ms; Spark + Flink commit once at the end of a
-          bounded run.</li>
-        <li><strong>mTLS overhead</strong> is paid equally by every
-          engine &mdash; comparison is fair, absolute rps would rise
-          without mTLS.</li>
-      </ul>
-    </div>
-    """
+    return ""  # merged into build_methodology()
 
 
 def build_repro() -> str:
@@ -850,15 +815,14 @@ def render(per_scale: dict, compaction: dict, output: str) -> None:
 
     body = (
         build_header(scales)
-        + build_tldr(per_scale)
-        + build_per_scale(per_scale)
-        + build_cross_scale(per_scale)
-        + build_compaction(compaction)
-        + build_verdict(per_scale)
-        + build_implementation()
-        + build_methodology(scales)
-        + build_caveats()
-        + build_repro()
+        + build_tldr(per_scale)            # 4 engine cards + hero chart
+        + build_implementation()           # what was built (context)
+        + build_per_scale(per_scale)       # raw numbers per scale
+        + build_cross_scale(per_scale)     # complementary trend charts
+        + build_compaction(compaction)     # side bench
+        + build_verdict(per_scale)         # decision matrix
+        + build_methodology(scales)        # method + caveats (merged)
+        + build_repro()                    # 4 commands
         + "<footer>Raw JSON: benchmark/results/scale-&lt;N&gt;/ + "
           "compaction-&lt;strategy&gt;.json.</footer>"
     )
