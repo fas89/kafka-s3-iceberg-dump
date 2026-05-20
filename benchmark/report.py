@@ -268,7 +268,11 @@ code { background: #f1f5f9; color: #334155; border-radius: 4px;
               box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); }
 .chart-card h3 { margin-top: 0; margin-bottom: 4px; }
 .chart-card svg { width: 100%; height: auto; display: block;
-                  margin-top: 8px; }
+                  margin-top: 8px;
+                  /* Belt-and-braces: explicit aspect ratio so height is
+                     never 0 even if the browser ignores the SVG
+                     width/height attributes. */
+                  aspect-ratio: 960 / 380; }
 .chart-title-row { display: flex; justify-content: space-between;
                    align-items: baseline; flex-wrap: wrap; gap: 8px; }
 .deco { color: var(--muted); font-weight: 500; font-size: 12px;
@@ -406,7 +410,8 @@ def svg_line_chart(
         f"<span class='deco'>{direction_note}</span>"
         f"</div>"
         f"<div class='legend'>{legend}</div>"
-        f"<svg viewBox='0 0 {width} {height}' "
+        f"<svg width='{width}' height='{height}' "
+        f"viewBox='0 0 {width} {height}' "
         f"preserveAspectRatio='xMidYMid meet' "
         f"role='img' aria-label='{html.escape(title)} line chart'>"
         f"{''.join(grid)}{axes}{''.join(series_svg)}{''.join(x_ticks)}"
