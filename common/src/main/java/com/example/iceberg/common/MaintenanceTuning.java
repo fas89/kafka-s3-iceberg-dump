@@ -50,4 +50,24 @@ public final class MaintenanceTuning {
   public static final int RETAIN_LAST_SNAPSHOTS = 3;
   /** Batch size for deleting expired files. */
   public static final int EXPIRE_DELETE_BATCH_SIZE = 100;
+
+  // --- DeleteOrphanFiles ---
+  /**
+   * Run orphan-file GC after this many commits. Higher than rewrite/expire
+   * because orphan detection is the most expensive maintenance task.
+   */
+  public static final int ORPHAN_ON_COMMIT_COUNT = 10;
+  /**
+   * Minimum age before a file is eligible for orphan deletion. Kept well
+   * above the ingest commit cadence so in-flight files are never mistaken
+   * for orphans.
+   */
+  public static final int ORPHAN_MIN_AGE_MINUTES = 10;
+  /** Batch size for deleting orphan files. */
+  public static final int ORPHAN_DELETE_BATCH_SIZE = 100;
+  /**
+   * Use S3-style prefix listing when scanning for orphan files (correct for
+   * S3FileIO / MinIO; falls back to a manifest scan when false).
+   */
+  public static final boolean ORPHAN_USE_PREFIX_LISTING = true;
 }

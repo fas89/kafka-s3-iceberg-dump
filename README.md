@@ -134,7 +134,12 @@ first run downloads images and Maven dependencies, so allow a few minutes.
 
 Every engine maintains its own table with identical tuning
 (`common/.../MaintenanceTuning.java`): compact to ~64 MB files, keep the last
-3 snapshots, expire snapshots older than 5 minutes.
+3 snapshots, expire snapshots older than 5 minutes, and clean up
+orphan files (files left behind by aborted writers or failed compactions)
+older than 10 minutes. The Flink-based maintenance chain wraps the JDBC
+trigger-lock factory in a `RetryingTriggerLockFactory` (5 attempts, 3 s
+delay) to absorb the JDBC cold-connect race on the TaskManager at first
+deploy.
 
 * **Flink** runs `TableMaintenance` inside the ingest job.
 * **Spark** runs `rewrite_data_files` / `expire_snapshots` procedures on a

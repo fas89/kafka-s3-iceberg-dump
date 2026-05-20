@@ -32,6 +32,7 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.flink.CatalogLoader;
 import org.apache.iceberg.flink.FlinkSchemaUtil;
 import org.apache.iceberg.flink.TableLoader;
+import org.apache.iceberg.flink.maintenance.api.DeleteOrphanFiles;
 import org.apache.iceberg.flink.maintenance.api.ExpireSnapshots;
 import org.apache.iceberg.flink.maintenance.api.JdbcLockFactory;
 import org.apache.iceberg.flink.maintenance.api.RewriteDataFiles;
@@ -139,17 +140,24 @@ public final class FlinkIngestJob {
         .writeParallelism(1)
         .append();
 
-    // ---- in-job Iceberg table maintenance (compaction + snapshot expiration) -
+    // ---- in-job Iceberg table maintenance (compaction + snapshot expiration
+    //      + orphan-file GC) -----------------------------------------------
     // Lock prevents two maintenance runs from colliding; it shares the
-    // catalog's Postgres. JdbcLockFactory auto-creates its lock table.
+    // catalog's Postgres. JdbcLockFactory auto-creates its lock table. The
+    // RetryingTriggerLockFactory wrapper absorbs the JDBC cold-connect race
+    // that otherwise surfaces on the TaskManager LockRemover.open() with
+    // numRestarts=1.
     TriggerLockFactory lockFactory =
-        new JdbcLockFactory(
-            CatalogConfig.jdbcUri(),
-            dbName + "." + tableName,
-            Map.of(
-                "jdbc.user", CatalogConfig.jdbcUser(),
-                "jdbc.password", CatalogConfig.jdbcPassword(),
-                JdbcLockFactory.INIT_LOCK_TABLES_PROPERTY, "true"));
+        new RetryingTriggerLockFactory(
+            new JdbcLockFactory(
+                CatalogConfig.jdbcUri(),
+                dbName + "." + tableName,
+                Map.of(
+                    "jdbc.user", CatalogConfig.jdbcUser(),
+                    "jdbc.password", CatalogConfig.jdbcPassword(),
+                    JdbcLockFactory.INIT_LOCK_TABLES_PROPERTY, "true")),
+            5,
+            3_000L);
 
     TableMaintenance.forTable(env, tableLoader, lockFactory)
         .uidSuffix(MaintenanceTuning.UID_SUFFIX)
@@ -167,6 +175,18 @@ public final class FlinkIngestJob {
                 .maxSnapshotAge(Duration.ofMinutes(MaintenanceTuning.MAX_SNAPSHOT_AGE_MINUTES))
                 .retainLast(MaintenanceTuning.RETAIN_LAST_SNAPSHOTS)
                 .deleteBatchSize(MaintenanceTuning.EXPIRE_DELETE_BATCH_SIZE))
+        .add(
+            // Orphan-file removal: cleans up files left behind by aborted
+            // writers / failed compactions. Least urgent / most expensive
+            // of the three, so it fires on the highest commit count.
+            // minAge stays well above the ingest commit cadence so
+            // in-flight files are never mistaken for orphans;
+            // usePrefixListing is correct for S3FileIO / MinIO.
+            DeleteOrphanFiles.builder()
+                .scheduleOnCommitCount(MaintenanceTuning.ORPHAN_ON_COMMIT_COUNT)
+                .minAge(Duration.ofMinutes(MaintenanceTuning.ORPHAN_MIN_AGE_MINUTES))
+                .usePrefixListing(MaintenanceTuning.ORPHAN_USE_PREFIX_LISTING)
+                .deleteBatchSize(MaintenanceTuning.ORPHAN_DELETE_BATCH_SIZE))
         .append();
 
     env.execute("flink-kafka-to-iceberg");
