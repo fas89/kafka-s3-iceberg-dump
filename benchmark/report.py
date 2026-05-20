@@ -471,7 +471,19 @@ def build_header(scales: list[int]) -> str:
         f"engines: flink, spark, duckdb, connect &middot; "
         f"generated {datetime.datetime.now().isoformat(timespec='seconds')}"
     )
-    return f"<h1>{title}</h1><div class='subtitle'>{subtitle}</div>"
+    # Visible source-file banner so this report can't be confused with any
+    # other repo's report.html (e.g. Kafka-Sink's, which has a different
+    # layout but the same file name).
+    banner = (
+        "<div style='padding:8px 14px;margin:0 0 20px;"
+        "border:1px solid #c7d2fe;background:#eef2ff;color:#3730a3;"
+        "border-radius:8px;font:600 12px ui-monospace,Menlo,monospace;'>"
+        "SOURCE: github.com/fas89/kafka-s3-iceberg-dump &middot; "
+        "branch feature/four-engine-benchmark &middot; "
+        "file benchmark/report.html"
+        "</div>"
+    )
+    return f"{banner}<h1>{title}</h1><div class='subtitle'>{subtitle}</div>"
 
 
 def build_tldr(per_scale: dict) -> str:
