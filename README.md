@@ -163,18 +163,30 @@ benchmark/compaction.sh 200000    # binpack vs sort vs zorder compaction speed
 
 `run.sh` brings up a clean stack, runs the producer in bounded mode, then
 **polls until all N rows have landed** in Iceberg — so it measures real ingest
-speed instead of waiting a fixed delay. Each per-engine result reports:
+speed instead of waiting a fixed delay. Each per-engine result is written as a
+nested JSON document to `benchmark/results/<engine>.json` and reports:
 
-* `startup_s` — engine cold start: producer start → the first Iceberg commit.
-* `ingest_s` / `throughput_rps` — end to end, producer start → all rows
-  committed. Consumption and the S3 write are interleaved in every streaming
-  engine, so they are not reported separately.
-* `peak_mem_mb` / `cpu_pct_avg` — efficiency: peak memory and average CPU,
-  sampled via `docker stats` over the engine's own containers.
-* `write_window_s`, `rows`, `data_files`, `compactions`, `snapshots` — table
-  state after the engine's own maintenance.
+* **Correctness** — `requested`, `final_rows`, `correct` (exact-match
+  verdict).
+* **Producer** — its own throughput summary (`producer.throughput_rps`,
+  `producer.delivered`, `producer.failed`) emitted by the Java producer on
+  shutdown, so a slow producer is visible separately from a slow engine.
+* **Speed** — `startup_s` (producer start → first Iceberg commit, the
+  engine's reaction time), `consume_drain_s` (producer finish → last commit,
+  wall clock), `ingest_s` (end to end, producer start → last commit),
+  `ingest_throughput_rps`. Consumption and the S3 write are interleaved in
+  every streaming engine, so they are not reported separately.
+* **Efficiency** — `peak_mem_mb` and `cpu_pct_avg` summed across the engine's
+  own containers, sampled every 5 s with `docker stats`.
+* **Table state** — under `table_stats`: `rows`, `data_files`, `size_bytes`,
+  `snapshots`, `write_window_s` (first → last append timestamp),
+  `compactions`, `compaction_files_rewritten` after the engine's own
+  maintenance.
 
-`run-all.sh` repeats this per engine and prints the side-by-side comparison.
+`run-all.sh` repeats this per engine and calls `benchmark/compare.py`, which
+prints a **transposed** comparison table (metrics on rows, engines on
+columns) with derived stats (e.g. `avg data file (KB)` from `size_bytes /
+data_files`). The host needs `python3` (built in on macOS / most Linuxes).
 
 `compaction.sh` is a separate, controlled comparison: it writes an identical
 many-small-files table and runs Iceberg's `rewrite_data_files` with each
