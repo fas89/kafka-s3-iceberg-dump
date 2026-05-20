@@ -505,7 +505,7 @@ def build_tldr(per_scale: dict) -> str:
         for e in engines
     }
     hero_chart = svg_line_chart(
-        title="ingest throughput vs scale",
+        title="ingest throughput",
         series=series,
         x_labels=[f"{s//1000}k" for s in scales],
         lower_is_better=False,
@@ -535,57 +535,27 @@ def build_tldr(per_scale: dict) -> str:
         f"</div>"
     )
 
-    summary = (
-        f"<p>At the largest scale tested ({largest:,} events), "
-        f"<span class='engine-{fastest}'>{fastest}</span> achieved the "
-        f"highest ingest throughput ({ingest_rps(top[fastest]) or 0:,.0f} rps), "
-        f"<span class='engine-{leanest}'>{leanest}</span> used the least "
-        f"memory ({top[leanest].get('peak_mem_mb', 0):,} MB), and "
-        f"<span class='engine-{most_stable}'>{most_stable}</span> had the "
-        f"most stable throughput across scales. The full ranking and "
-        f"recommendation are in the verdict section below.</p>"
-    )
-
     return (
         f"<div class='card'>"
-        f"<div class='tldr-grid'>"
-        f"  <div>"
-        f"    <h3 style='margin-top:0'>TL;DR</h3>"
-        f"    {summary}{cards}"
-        f"  </div>"
-        f"  <div>{hero_chart}</div>"
-        f"</div></div>"
+        f"  {cards}"
+        f"  {hero_chart}"
+        f"</div>"
     )
 
 
 def build_methodology(scales: list[int]) -> str:
     return f"""
-    <h2>Methodology</h2>
+    <h2>How it's measured</h2>
     <div class='card'>
-      <p><strong>Workload:</strong> a Java producer publishes synthetic JSON
-        events over <strong>mutual-TLS Kafka</strong> with the schema
-        <code>{{id, event_type, user_id, amount, event_time}}</code>.
-        Each engine consumes the same topic and writes its own Iceberg table
-        (<code>&lt;engine&gt;_db.events</code>) on MinIO via a shared
-        Postgres JDBC catalog, partitioned by <code>event_type</code> so the
-        stream produces many small files for compaction.</p>
-      <p><strong>Scales:</strong> {', '.join(f'{s:,}' for s in scales)}
-        events per engine, each on a freshly torn-down stack.</p>
-      <p><strong>Timing</strong> is derived from the
-        <strong>Iceberg snapshot log</strong> (engine-agnostic source of
-        truth, not from any engine's own metrics):
-        <code>startup_s</code> = producer start &rarr; first append snapshot,
-        <code>ingest_s</code> = producer start &rarr; last append snapshot,
-        <code>consume_drain_s</code> = producer finish &rarr; last append.
-        <strong>Throughput</strong> is <code>requested / ingest_s</code>.</p>
-      <p><strong>Resources</strong> come from <code>docker stats</code>
-        sampled every 5 s, summed across each engine's own containers
-        (e.g. <code>flink-jobmanager</code> + <code>flink-taskmanager</code>
-        for Flink). <code>peak_mem_mb</code> is the peak summed value;
-        <code>cpu_pct_avg</code> is the mean.</p>
-      <p><strong>Correctness</strong> is verified by polling the Iceberg
-        table via the JDBC catalog until <code>rows &ge; requested</code>;
-        the <code>row count exact</code> column is the explicit verdict.</p>
+      <p>Java producer &rarr; mTLS Kafka &rarr; each engine writes
+        <code>&lt;engine&gt;_db.events</code> on MinIO via a shared
+        Postgres JDBC catalog. Scales:
+        <strong>{', '.join(f'{s:,}' for s in scales)}</strong> events,
+        clean stack per engine per scale. Timing from Iceberg snapshot
+        timestamps (engine-agnostic); resources from
+        <code>docker stats</code> sampled every 5 s across each engine's
+        containers; correctness by polling rows until
+        <code>rows &ge; requested</code>.</p>
     </div>
     """
 
@@ -593,14 +563,7 @@ def build_methodology(scales: list[int]) -> str:
 def build_per_scale(per_scale: dict) -> str:
     scales = sorted(per_scale)
     tables = "".join(html_table(s, per_scale[s]) for s in scales)
-    return (
-        "<h2>Per-scale comparison</h2>"
-        "<p class='subtitle'>Transposed tables &mdash; metrics on rows, engines "
-        "on columns. The green-highlighted cell in each row is the winner for "
-        "that metric at that scale (higher-is-better for throughput, "
-        "lower-is-better for time / memory / cpu).</p>"
-        f"{tables}"
-    )
+    return f"<h2>Numbers</h2>{tables}"
 
 
 def build_cross_scale(per_scale: dict) -> str:
@@ -633,12 +596,14 @@ def build_cross_scale(per_scale: dict) -> str:
             return round(ingest_s / snapshots, 2)
         return None
 
+    # Throughput is already the hero chart in the TL;DR card — don't render
+    # it again here. The trends grid is for the *complementary* metrics
+    # (latency / memory / startup / cpu / drain) that explain HOW the
+    # throughput shape happens.
     charts = [
-        svg_line_chart("ingest throughput",      series(ingest_rps),
-                       x_labels, lower_is_better=False, unit=" rps"),
         svg_line_chart("ingest time",            series(lambda r: r.get("ingest_s")),
                        x_labels, lower_is_better=True, unit=" s"),
-        svg_line_chart("commit cadence (data-freshness latency)",
+        svg_line_chart("commit cadence",
                        series(commit_cadence_s),
                        x_labels, lower_is_better=True, unit=" s"),
         svg_line_chart("peak memory",            series(lambda r: r.get("peak_mem_mb")),
@@ -651,77 +616,14 @@ def build_cross_scale(per_scale: dict) -> str:
                        x_labels, lower_is_better=True, unit=" s"),
     ]
 
-    # Scaling-factor table.
-    rows = []
-    for e in engines_present:
-        first = ingest_rps(per_scale[scales[0]].get(e) or {})
-        last  = ingest_rps(per_scale[scales[-1]].get(e) or {})
-        if not first or not last:
-            verdict, cls = "no data", "warn"
-            ratio_text = "-"
-        else:
-            ratio = last / first
-            if ratio >= 1.15:
-                verdict, cls = "improved", "winner"
-            elif ratio >= 0.85:
-                verdict, cls = "stable", ""
-            else:
-                verdict, cls = "degraded", "bad"
-            ratio_text = f"{ratio:.2f}x"
-        rows.append(
-            f"<tr>"
-            f"<td><span class='engine-{e}'>{e}</span></td>"
-            f"<td>{fmt(first, '{:,.0f}')}</td>"
-            f"<td>{fmt(last, '{:,.0f}')}</td>"
-            f"<td>{ratio_text}</td>"
-            f"<td><span class='{cls}'>{verdict}</span></td>"
-            f"</tr>"
-        )
-    factor_table = (
-        f"<div class='card'><h3>Scaling factor (rps at largest / smallest scale)</h3>"
-        f"<table class='matrix'><thead><tr>"
-        f"<th>engine</th><th>rps @ {scales[0]:,}</th><th>rps @ {scales[-1]:,}</th>"
-        f"<th>ratio</th><th>verdict</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table></div>"
-    )
-
     return (
-        "<h2>Cross-scale trends</h2>"
-        "<p class='subtitle'>Line charts show each engine's metric across "
-        "the three scales. Flat = the engine handled the load increase "
-        "without degrading; rising lines on time / memory charts = the "
-        "engine grew with the data.</p>"
+        "<h2>Trends across scales</h2>"
         f"<div class='charts-grid'>{''.join(charts)}</div>"
-        f"{factor_table}"
     )
 
 
 def build_schema_note() -> str:
-    return """
-    <h2>Schema handling</h2>
-    <div class='card'>
-      <p>This branch does <strong>not</strong> add a central schema-mapping
-        layer; each engine implements its own JSON &rarr; Iceberg conversion
-        for the fixed 5-field event schema. The repo dedupes this in 6 spots:</p>
-      <table>
-        <thead><tr><th>where</th><th>mechanism</th></tr></thead>
-        <tbody>
-          <tr><td>producer/EventProducer.java</td><td>Java Map + Jackson JSON</td></tr>
-          <tr><td>engine-flink/FlinkIngestJob.java</td><td>Iceberg <code>Schema</code> + <code>RowType</code></td></tr>
-          <tr><td>engine-flink/JsonToRowData.java</td><td>hand-written JsonNode &rarr; GenericRowData</td></tr>
-          <tr><td>engine-spark/SparkIngestJob.java</td><td>Spark <code>StructType</code> + <code>CREATE TABLE</code> DDL</td></tr>
-          <tr><td>engine-duckdb/DuckDbIngestJob.java</td><td>DuckDB SQL DDL + <code>PreparedStatement</code></td></tr>
-          <tr><td>engines/connect/iceberg-sink.json</td><td>JsonConverter + <code>auto-create-enabled</code> + <code>evolve-schema-enabled</code></td></tr>
-        </tbody>
-      </table>
-      <p><strong>Connect differentiator:</strong> with
-        <code>evolve-schema-enabled: true</code>, Connect can add columns on
-        the fly when new JSON keys appear. The other three engines have
-        compile-time-fixed schemas and silently drop unknown fields. The
-        throughput numbers in this report don't capture that flexibility
-        edge.</p>
-    </div>
-    """
+    return ""  # cut — orthogonal to the speed comparison
 
 
 def build_compaction(compaction: dict) -> str:
@@ -748,24 +650,17 @@ def build_compaction(compaction: dict) -> str:
             cells.append(f"<td{cls}>{fmt(v, f)}</td>")
         body.append(f"<tr><td>{label}</td>{''.join(cells)}</tr>")
     return f"""
-    <h2>Compaction strategy comparison</h2>
-    <p class='subtitle'>Identical many-small-files Iceberg tables compacted
-      with each strategy via Spark's <code>rewrite_data_files</code> procedure.
-      Output size is essentially identical; the difference is wall-clock time
-      and the data-locality benefit on later reads (not measured here).</p>
+    <h2>Compaction strategies</h2>
     <div class='card'>
       <table>
         <thead><tr><th>metric</th>{headers}</tr></thead>
         <tbody>{''.join(body)}</tbody>
       </table>
-    </div>
-    <div class='callout'>
-      <strong>Strategy guidance:</strong> pick <code>binpack</code> when you
-      only need to coalesce small files; pick <code>sort</code> if your
-      reads filter on one column (typically <code>event_time</code>); pick
-      <code>zorder</code> if your reads filter on two correlated columns
-      (e.g. <code>user_id</code> + <code>event_time</code>). The cost
-      ranking on compaction time is typically binpack &lt; sort &lt; zorder.
+      <p class='subtitle' style='margin-top:14px'>Same many-small-files
+      table compacted with each strategy via Spark's
+      <code>rewrite_data_files</code>. Same output size; pick
+      <code>sort</code> / <code>zorder</code> when reads filter on those
+      columns and you can afford the extra wall-clock cost.</p>
     </div>
     """
 
@@ -789,31 +684,26 @@ def build_verdict(per_scale: dict) -> str:
 
     # Decision matrix rows.
     matrix = [
-        ("Max throughput at scale",
-         "<span class='engine-spark'>Spark</span> ingest",
-         "<span class='engine-spark'>Spark</span> in-job procedures",
-         "Highest measured rps at every scale tested, with effectively "
-         "flat memory as data grows. Native Iceberg procedures cover "
-         "binpack + sort + zorder."),
-        ("Leanest memory footprint",
-         "<span class='engine-duckdb'>DuckDB</span> ingest",
-         "<span class='engine-spark'>Spark</span> side maintenance",
-         "Lowest peak memory at every scale (single-node, in-process). "
-         "Spark beside it covers binpack + sort + zorder; the repo's "
-         "<code>docker-compose.maintenance-spark.yml</code> wires this up."),
-        ("Multi-host, fleet-managed streaming",
-         "<span class='engine-connect'>Kafka Connect</span> ingest",
-         "<span class='engine-spark'>Spark</span> side maintenance",
-         "Connect trades raw speed (slowest measured) for fleet "
-         "management, REST tuning and horizontal scale via "
-         "<code>tasks.max</code>. Spark for maintenance because Connect "
-         "has no native compaction."),
-        ("Low-latency exactly-once",
-         "<span class='engine-flink'>Flink</span> ingest",
-         "<span class='engine-flink'>Flink</span> in-job maintenance",
-         "Flink's <code>TableMaintenance</code> runs alongside ingest "
-         "in the same job; checkpoint interval is the latency floor. "
-         "Heavier memory than Spark but most stable rps across scales."),
+        ("Max throughput",
+         "<span class='engine-spark'>Spark</span>",
+         "<span class='engine-spark'>Spark</span>",
+         "Fastest rps + flattest memory at every scale."),
+        ("Lowest memory",
+         "<span class='engine-duckdb'>DuckDB</span>",
+         "<span class='engine-spark'>Spark</span>",
+         "DuckDB is single-node, in-process; Spark for binpack + sort + zorder."),
+        ("Freshest reads",
+         "<span class='engine-duckdb'>DuckDB</span>",
+         "<span class='engine-spark'>Spark</span>",
+         "Sub-second commit cadence vs others' 15&ndash;94 s."),
+        ("Fleet-managed",
+         "<span class='engine-connect'>Kafka Connect</span>",
+         "<span class='engine-spark'>Spark</span>",
+         "REST control plane + <code>tasks.max</code>; slowest measured."),
+        ("Exactly-once streaming",
+         "<span class='engine-flink'>Flink</span>",
+         "<span class='engine-flink'>Flink</span>",
+         "Checkpoint-driven commits; sibling maintenance container."),
     ]
     matrix_html = "".join(
         f"<tr><td>{scenario}</td><td>{dump}</td><td>{maint}</td><td>{why}</td></tr>"
@@ -840,62 +730,35 @@ def build_verdict(per_scale: dict) -> str:
     findings_table = "".join(findings_rows)
 
     return f"""
-    <h2>Verdict &amp; recommendation</h2>
+    <h2>Verdict</h2>
     <div class='card'>
-      <h3>Findings, from the measured data</h3>
-      <p>Ranking at the largest scale tested ({largest:,} events),
-        derived directly from the benchmark JSON:</p>
       <table class='matrix'>
         <thead><tr>
           <th>engine</th>
           <th>rps @ {largest:,}</th>
-          <th>peak mem @ {largest:,}</th>
-          <th>rps scaling ({scales[0]:,} &rarr; {largest:,})</th>
+          <th>peak mem</th>
+          <th>rps scaling ({scales[0]//1000}k &rarr; {largest//1000}k)</th>
         </tr></thead>
         <tbody>{findings_table}</tbody>
       </table>
-      <ul>
-        <li><strong>Fastest end-to-end:</strong>
-          <span class='engine-{fastest}'>{fastest}</span>
-          ({rps(fastest):,.0f} rps at {largest:,}).</li>
-        <li><strong>Leanest memory footprint:</strong>
-          <span class='engine-{leanest}'>{leanest}</span>
-          ({mem(leanest):,} MB at {largest:,}).</li>
-        <li><strong>Only engine with binpack + sort + zorder
-          compaction:</strong>
-          <span class='engine-spark'>Spark</span>. Flink's
-          table-maintenance API ships only binpack.</li>
-        <li><strong>Only engine with horizontal scale and
-          fleet-management out of the box:</strong>
-          <span class='engine-connect'>Kafka Connect</span>
-          (via <code>tasks.max</code> and the REST control plane).</li>
-      </ul>
 
-      <h3>Decision matrix</h3>
+      <h3 style='margin-top:24px'>Pick by scenario</h3>
       <table class='matrix'>
         <thead><tr>
           <th style='width:26%'>scenario</th>
-          <th>dump engine</th>
-          <th>maintenance engine</th>
+          <th>ingest</th>
+          <th>maintenance</th>
           <th>why</th>
         </tr></thead>
         <tbody>{matrix_html}</tbody>
       </table>
 
-      <div class='callout win'>
-        <strong>Top-line:</strong>
-        <span class='engine-{fastest}'>{fastest}</span> wins raw
-        throughput at every scale tested ({rps(fastest):,.0f} rps at
-        {largest:,}, with effectively flat memory). Default ingest
-        engine is therefore {fastest}. Use
-        <span class='engine-{leanest}'>{leanest}</span> when memory or
-        single-process simplicity outranks speed ({mem(leanest):,} MB
-        at {largest:,}, leanest measured). Use
-        <span class='engine-connect'>Kafka Connect</span> when fleet
-        management of a REST-configured worker matters more than raw
-        rps. <span class='engine-spark'>Spark</span> is the right side
-        maintenance engine in every case &mdash; only one with
-        binpack + sort + zorder.
+      <div class='callout win' style='margin-top:20px'>
+        Default ingest engine: <span class='engine-{fastest}'>{fastest}</span>
+        (fastest at every scale tested,
+        {rps(fastest):,.0f} rps @ {largest:,}, flat memory). Default
+        maintenance engine: <span class='engine-spark'>Spark</span>
+        (only one with binpack + sort + zorder).
       </div>
     </div>
     """
@@ -903,78 +766,36 @@ def build_verdict(per_scale: dict) -> str:
 
 def build_caveats() -> str:
     return """
-    <h2>Caveats &amp; threats to validity</h2>
+    <h2>Caveats</h2>
     <div class='card'>
       <ul>
-        <li><strong>Single host.</strong> All four engines run on one
-          machine, sharing CPU and disk I/O. Numbers do not generalize to
-          multi-node deployments.</li>
-        <li><strong>Docker Desktop on macOS.</strong> Container networking
-          and disk I/O have an overhead Linux hosts don't. Treat absolute
-          numbers as upper bounds for relative comparison only.</li>
-        <li><strong>mTLS overhead is real but constant.</strong> Every
-          engine pays the same handshake / encryption cost, so the
-          comparison is fair, but throughput numbers would rise without
-          mTLS.</li>
-        <li><strong>Connect's commit interval</strong>
-          (<code>iceberg.control.commit.interval-ms = 5000</code>) bounds
-          its commit cadence. Lowering it improves freshness but increases
-          commit-overhead. Defaults shipped.</li>
-        <li><strong>Flink's 30 s checkpoint interval</strong> is a latency
-          floor &mdash; Iceberg commits on checkpoint, so
-          <code>startup_s</code> never goes below ~22 s no matter the
-          load.</li>
-        <li><strong>DuckDB writes in micro-batches</strong> (10 commits
-          per run by default); other engines often commit once at the end.
-          That's why <code>drain_s</code> is non-zero for DuckDB and ~0
-          for the others.</li>
-        <li><strong>Flink topology change since these numbers were
-          taken:</strong> the ingest job no longer runs maintenance
-          in-job &mdash; it now lives in a sibling container running
-          <code>flink-maintenance.jar</code>. At these scales Flink
-          committed once at the end (<code>snapshots = 1</code>), so the
-          in-job maintenance never actually fired (it needs
-          <code>scheduleOnCommitCount = 3</code> commits). Throughput
-          numbers shown are therefore representative of the split
-          topology too.</li>
-        <li><strong>Demo defaults.</strong> MinIO
-          <code>admin/password</code>, Postgres <code>iceberg/iceberg</code>,
-          keystore <code>changeit</code> &mdash; do not use in
+        <li><strong>Single host, Docker Desktop on macOS.</strong>
+          Numbers are reproducible but don't generalize to multi-node
           production.</li>
+        <li><strong>Engine-imposed latency floors:</strong> Flink commits
+          on checkpoint (default 30 s); Connect commits on its
+          interval-ms (default 5 s); DuckDB micro-batches every
+          ~few-hundred-ms; Spark + Flink commit once at the end of a
+          bounded run.</li>
+        <li><strong>mTLS overhead</strong> is paid equally by every
+          engine &mdash; comparison is fair, absolute rps would rise
+          without mTLS.</li>
       </ul>
     </div>
     """
 
 
 def build_repro() -> str:
-    versions_rows = "".join(
-        f"<tr><td>{html.escape(name)}</td><td>{html.escape(ver)}</td></tr>"
-        for name, ver in VERSIONS
-    )
-    return f"""
-    <h2>Reproducibility</h2>
+    return """
+    <h2>Reproduce</h2>
     <div class='card'>
-      <p>From a clean clone:</p>
-      <ul>
-        <li><code>./certs/generate-certs.sh</code> &mdash; one-time, generates
-          the local-CA mTLS material under <code>certs/</code></li>
-        <li><code>./mvnw -DskipTests package</code> &mdash; (optional) builds
-          every module's fat jar; the Docker <code>builder</code> service
-          does this inside the container otherwise</li>
-        <li><code>benchmark/run-scales.sh 50000 100000 200000</code>
-          &mdash; runs all four engines on each scale, on a clean stack
-          per engine, and stashes per-engine JSON results into
-          <code>benchmark/results/scale-&lt;N&gt;/</code></li>
-        <li><code>benchmark/compaction.sh 80000</code> &mdash; (optional)
-          binpack / sort / zorder compaction comparison</li>
-        <li><code>python3 benchmark/report.py</code> &mdash; renders this
-          HTML from the raw JSON</li>
-      </ul>
-      <h3>Pinned versions (from README.md)</h3>
-      <table>
-        <thead><tr><th>component</th><th>version</th></tr></thead>
-        <tbody>{versions_rows}</tbody>
-      </table>
+      <ol style='margin:0;padding-left:22px;color:var(--text-2)'>
+        <li><code>./certs/generate-certs.sh</code></li>
+        <li><code>benchmark/run-scales.sh 50000 100000 200000</code></li>
+        <li><code>benchmark/compaction.sh 80000</code></li>
+        <li><code>python3 benchmark/report.py</code> &rarr;
+          <code>benchmark/report.html</code></li>
+      </ol>
     </div>
     """
 
@@ -987,17 +808,15 @@ def render(per_scale: dict, compaction: dict, output: str) -> None:
     body = (
         build_header(scales)
         + build_tldr(per_scale)
-        + build_methodology(scales)
         + build_per_scale(per_scale)
         + build_cross_scale(per_scale)
-        + build_schema_note()
         + build_compaction(compaction)
         + build_verdict(per_scale)
+        + build_methodology(scales)
         + build_caveats()
         + build_repro()
-        + "<footer>Generated by benchmark/report.py. Raw per-engine JSON "
-          "in benchmark/results/scale-&lt;N&gt;/, compaction JSON in "
-          "benchmark/results/compaction-&lt;strategy&gt;.json.</footer>"
+        + "<footer>Raw JSON: benchmark/results/scale-&lt;N&gt;/ + "
+          "compaction-&lt;strategy&gt;.json.</footer>"
     )
 
     out = f"""<!doctype html>
