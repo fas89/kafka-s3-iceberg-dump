@@ -132,8 +132,6 @@ METRICS: list[tuple[str, Callable[[dict], object], str, Optional[str], str]] = [
      "Correctness verdict: rows landed == records requested?"),
     ("producer rps",           producer_rps,                          "{:,.1f}", "higher",
      "Producer's own throughput in events / second (from its on-shutdown JSON line)."),
-    ("startup s",              lambda r: r.get("startup_s"),          "{:,}",   "lower",
-     "Wall-clock seconds: producer start → first Iceberg commit. Engine reaction time. For single-commit engines this equals ingest s."),
     ("drain s",                lambda r: r.get("consume_drain_s"),    "{:,}",   "lower",
      "Wall-clock seconds: producer finish → last Iceberg commit. Tail latency after Kafka is done."),
     ("ingest s",               lambda r: r.get("ingest_s"),           "{:,}",   "lower",
@@ -752,12 +750,6 @@ def build_cross_scale(per_scale: dict) -> str:
             description="Maximum summed memory across the engine's own "
                         "containers, sampled every 5 s. Flat line = "
                         "memory doesn't grow with data."),
-        svg_line_chart("startup time", series(lambda r: r.get("startup_s")),
-            x_labels, lower_is_better=True, unit=" s",
-            description="Seconds from producer start to the first "
-                        "Iceberg commit. Lower = engine reacted to data "
-                        "faster. For single-commit engines this equals "
-                        "ingest time."),
         svg_line_chart("avg cpu", series(lambda r: r.get("cpu_pct_avg")),
             x_labels, lower_is_better=True, unit=" %",
             description="Mean CPU% across the engine's own containers "

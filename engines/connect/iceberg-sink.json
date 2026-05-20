@@ -25,6 +25,6 @@
   "iceberg.tables.evolve-schema-enabled": "true",
   "iceberg.tables.schema-force-optional": "true",
 
-  "iceberg.control.commit.interval-ms": "5000",
-  "iceberg.control.commit.timeout-ms": "30000"
+  "iceberg.control.commit.interval-ms": "1000",
+  "iceberg.control.commit.timeout-ms": "5000"
 }
