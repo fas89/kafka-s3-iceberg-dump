@@ -709,26 +709,31 @@ def build_verdict(per_scale: dict) -> str:
 
     # Decision matrix rows.
     matrix = [
-        ("Single host, &lt; ~10M events",
+        ("Max throughput at scale",
+         "<span class='engine-spark'>Spark</span> ingest",
+         "<span class='engine-spark'>Spark</span> in-job procedures",
+         "Highest measured rps at every scale tested, with effectively "
+         "flat memory as data grows. Native Iceberg procedures cover "
+         "binpack + sort + zorder."),
+        ("Leanest memory footprint",
          "<span class='engine-duckdb'>DuckDB</span> ingest",
          "<span class='engine-spark'>Spark</span> side maintenance",
-         "DuckDB is fastest and leanest at this scale; Spark gives "
-         "binpack + sort + zorder for free."),
-        ("Multi-host, sustained streaming",
+         "Lowest peak memory at every scale (single-node, in-process). "
+         "Spark beside it covers binpack + sort + zorder; the repo's "
+         "<code>docker-compose.maintenance-spark.yml</code> wires this up."),
+        ("Multi-host, fleet-managed streaming",
          "<span class='engine-connect'>Kafka Connect</span> ingest",
          "<span class='engine-spark'>Spark</span> side maintenance",
-         "Connect is fleet-managed, REST-tuned, horizontally scaled via "
-         "<code>tasks.max</code>; Spark for the same maintenance reason."),
+         "Connect trades raw speed (slowest measured) for fleet "
+         "management, REST tuning and horizontal scale via "
+         "<code>tasks.max</code>. Spark for maintenance because Connect "
+         "has no native compaction."),
         ("Low-latency exactly-once",
          "<span class='engine-flink'>Flink</span> ingest",
          "<span class='engine-flink'>Flink</span> in-job maintenance",
-         "Flink's <code>TableMaintenance</code> runs alongside ingest in "
-         "the same job; checkpoint interval is the latency floor."),
-        ("All-SQL, batch-and-stream mix",
-         "<span class='engine-spark'>Spark</span> ingest",
-         "<span class='engine-spark'>Spark</span> in-job procedures",
-         "One engine for the whole lifecycle; native Iceberg procedures; "
-         "best memory-per-throughput of the JVM engines."),
+         "Flink's <code>TableMaintenance</code> runs alongside ingest "
+         "in the same job; checkpoint interval is the latency floor. "
+         "Heavier memory than Spark but most stable rps across scales."),
     ]
     matrix_html = "".join(
         f"<tr><td>{scenario}</td><td>{dump}</td><td>{maint}</td><td>{why}</td></tr>"
@@ -740,19 +745,30 @@ def build_verdict(per_scale: dict) -> str:
     <div class='card'>
       <h3>Your proposal evaluated</h3>
       <p>You suggested <strong>DuckDB or Kafka Connect for ingest, with
-        Spark or Flink running maintenance on the side</strong>. The data
-        supports this pattern at the scales tested; the repo already wires
-        it up via the standalone <code>maintenance</code> container in the
-        DuckDB and Connect overlays, and
-        <code>docker-compose.maintenance-spark.yml</code> swaps in the
-        Spark-based variant.</p>
+        Spark or Flink running maintenance on the side</strong>. The
+        pattern is supported by the repo (docker-compose overlays for
+        either DuckDB or Connect + a standalone <code>maintenance</code>
+        container, swappable between Flink-based and
+        <code>docker-compose.maintenance-spark.yml</code> Spark-based) &mdash;
+        but the measured data argues for a small revision: between
+        DuckDB and Connect, <strong>DuckDB</strong> is the right ingest
+        engine. The bigger surprise is that <strong>Spark</strong> beats
+        both at every scale, so unless single-process simplicity or
+        fleet-management is a hard requirement, Spark is the default.</p>
       <ul>
-        <li><strong>Ingest engine</strong> &mdash; at {largest:,} events:
+        <li><strong>Between DuckDB and Connect, DuckDB wins</strong>
+          &mdash; at {largest:,} events:
           <span class='engine-duckdb'>DuckDB</span> {rps('duckdb'):,.0f} rps
-          vs <span class='engine-connect'>Connect</span> {rps('connect'):,.0f} rps.
-          DuckDB wins on raw speed and on memory
-          ({mem('duckdb'):,} MB vs {mem('connect'):,} MB), but is single-node;
-          Connect is slower but horizontally scalable and fleet-managed.</li>
+          vs <span class='engine-connect'>Connect</span>
+          {rps('connect') or 0:,.0f} rps. DuckDB also wins memory
+          ({mem('duckdb'):,} MB vs {mem('connect') or 0:,} MB), at the
+          cost of being single-node.</li>
+        <li><strong>But Spark beats both</strong> &mdash;
+          <span class='engine-spark'>Spark</span> {rps('spark'):,.0f} rps
+          at {largest:,}, with {mem('spark'):,} MB and CPU efficiency
+          comparable to DuckDB. If you don't need DuckDB's
+          single-process trait or Connect's fleet management, Spark is
+          the default ingest engine and also the maintenance engine.</li>
         <li><strong>Maintenance engine</strong> &mdash; prefer
           <span class='engine-spark'>Spark</span>. Spark's
           <code>rewrite_data_files</code> procedure supports
@@ -775,13 +791,19 @@ def build_verdict(per_scale: dict) -> str:
       </table>
 
       <div class='callout win'>
-        <strong>Top-line:</strong> for a local/single-box deployment, use
-        <span class='engine-duckdb'>DuckDB</span> ingest +
-        <span class='engine-spark'>Spark</span> side maintenance. For a
-        production multi-node deployment, use
-        <span class='engine-connect'>Kafka Connect</span> ingest +
-        <span class='engine-spark'>Spark</span> side maintenance &mdash; you
-        give up raw speed for fleet management and horizontal scale.
+        <strong>Top-line:</strong> the data inverts the small-scale
+        intuition. <span class='engine-spark'>Spark</span> wins raw
+        throughput at every scale tested ({rps('spark'):,.0f} rps at
+        {largest:,}, with effectively flat memory). Default ingest engine
+        is therefore Spark. Use <span class='engine-duckdb'>DuckDB</span>
+        only when memory or single-process simplicity matters more than
+        speed ({mem('duckdb'):,} MB at {largest:,}, leanest by far). Use
+        <span class='engine-connect'>Kafka Connect</span> only when you
+        need a fleet-managed REST-configured worker (slowest measured,
+        {rps('connect') or 0:,.0f} rps at {largest:,}).
+        <span class='engine-spark'>Spark</span> is also the right side
+        maintenance engine in every case &mdash; the only one that ships
+        binpack + sort + zorder.
       </div>
     </div>
     """
