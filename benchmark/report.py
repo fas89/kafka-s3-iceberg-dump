@@ -898,6 +898,35 @@ def build_repro() -> str:
     """
 
 
+def build_startup_winner(per_scale: dict) -> str:
+    """One-line callout at the very end naming the startup-time winner.
+
+    Computed from the JSON (median startup_s across scales, lowest wins)
+    but with no numbers shown in the rendered text — just the engine name."""
+    scales = sorted(per_scale)
+    if not scales:
+        return ""
+    import statistics
+    medians = {}
+    for e in ENGINE_ORDER:
+        vals = []
+        for s in scales:
+            r = per_scale[s].get(e)
+            if r and r.get("startup_s") is not None:
+                vals.append(r["startup_s"])
+        if vals:
+            medians[e] = statistics.median(vals)
+    if not medians:
+        return ""
+    winner = min(medians, key=medians.get)
+    return (
+        f"<div class='callout win' style='margin-top:32px'>"
+        f"Startup-time winner (time to first Iceberg commit): "
+        f"<span class='engine-{winner}'>{winner}</span>."
+        f"</div>"
+    )
+
+
 # ---------- entry point -----------------------------------------------------
 
 def render(per_scale: dict, compaction: dict, output: str) -> None:
@@ -913,6 +942,7 @@ def render(per_scale: dict, compaction: dict, output: str) -> None:
         + build_verdict(per_scale)         # decision matrix
         + build_methodology(scales)        # method + caveats (merged)
         + build_repro()                    # 4 commands
+        + build_startup_winner(per_scale)  # one-line bottom note
         + "<footer>Raw JSON: benchmark/results/scale-&lt;N&gt;/ + "
           "compaction-&lt;strategy&gt;.json.</footer>"
     )
